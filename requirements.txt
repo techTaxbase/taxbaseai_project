@@ -1,0 +1,18 @@
+# Core
+streamlit
+pandas
+numpy
+streamlit_authenticator
+bcrypt
+
+# Data ingestion & APIs
+dropbox
+openai
+python-dotenv
+altair
+plotly
+faiss-cpu
+
+# Testing
+pytest
+pytest-cov

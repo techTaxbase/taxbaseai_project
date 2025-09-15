@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Streamlit Secrets
+.streamlit/secrets.toml
+admin.py
+
+# DropBox e OpenAI keys
+*.env

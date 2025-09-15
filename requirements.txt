@@ -12,6 +12,7 @@ python-dotenv
 altair
 plotly
 faiss-cpu
+sqlalchemy
 
 # Testing
 pytest

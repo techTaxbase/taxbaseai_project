@@ -608,13 +608,15 @@ if authentication_status:
 
             brief_ctx = brief_history(st.session_state.messages)
 
-            dre_raw = load_csv_from_dropbox(
-                f"DRE_{date_str}_{company_for_metrics}.csv",
-                ["nome_empresa", "descrição", "valor"]
+            dre_raw = load_monthly_csv_from_dropbox(
+                prefix_month=f"DRE_{date_str}",
+                company_id=company_for_metrics,
+                expected_cols=["nome_empresa", "descrição", "valor"]
             )
-            bal_raw = load_csv_from_dropbox(
-                f"BALANCO_{date_str}_{company_for_metrics}.csv",
-                ["nome_empresa", "descrição", "saldo_atual"]
+            bal_raw = load_monthly_csv_from_dropbox(
+                prefix_month=f"BALANCO_{date_str}",
+                company_id=company_for_metrics,
+                expected_cols=["nome_empresa", "descrição", "saldo_atual"]
             )
             if dre_raw is None or bal_raw is None:
                 st.error("Não foi possível carregar os dados brutos.")

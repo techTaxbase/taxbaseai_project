@@ -74,7 +74,7 @@ authenticator = stauth.Authenticate(
 )
 
 # Nova assinatura com 'fields' (biblioteca atual)
-name, authentication_status, username = authenticator.login(
+authenticator.login(
     location="main",
     fields={
         "Form name": "Login",
@@ -83,6 +83,11 @@ name, authentication_status, username = authenticator.login(
         "Login": "Entrar"
     }
 )
+
+# após exibir o formulário, leia os valores do session_state
+authentication_status = st.session_state.get("authentication_status")
+name                  = st.session_state.get("name")
+username              = st.session_state.get("username")
 
 # -----------------------------------------------------------------------------
 # 1. FAISS Embeddings

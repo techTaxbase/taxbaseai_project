@@ -414,27 +414,43 @@ def load_monthly_csv_from_dropbox(prefix_month: str, company_id: str, expected_c
     return load_csv_from_dropbox(latest, expected_cols)
 
 def load_and_clean(company_id: str, date_str: str) -> tuple[pd.DataFrame, pd.DataFrame] | tuple[None, None]:
-    dre_raw = load_monthly_csv_from_dropbox(prefix_month=f"DRE_{date_str}", company_id=company_id,
-                                    expected_cols=["nome_empresa","descrição","valor"])
-    bal_raw = load_monthly_csv_from_dropbox(prefix_month=f"BALANCO_{date_str}", company_id=company_id,
-                                    expected_cols=["nome_empresa","descrição","saldo_atual"])
-    if dre_raw is None or bal_raw is None:
+    """
+    Carrega os arquivos DRE e BALANCO já processados do Dropbox.
+    Esta função agora espera o formato limpo (company, account, amount)
+    que é salvo pelo painel de administrador.
+    """
+    # As colunas esperadas agora são as colunas padronizadas
+    expected_cols = ["company", "account", "amount"]
+
+    # Carrega o DRE
+    dre_df = load_monthly_csv_from_dropbox(
+        prefix_month=f"DRE_{date_str}",
+        company_id=company_id,
+        expected_cols=expected_cols
+    )
+    
+    # Carrega o BALANCO
+    bal_df = load_monthly_csv_from_dropbox(
+        prefix_month=f"BALANCO_{date_str}",
+        company_id=company_id,
+        expected_cols=expected_cols
+    )
+
+    if dre_df is None or bal_df is None:
         return None, None
 
-    # padroniza, mapeia, adiciona metadata e limpa
-    dre_df = standardize_columns(dre_raw)
-    dre_df = apply_account_mapping(dre_df)
-    dre_df = add_metadata(dre_df, "income_statement", date_str, company_id)
-    dre = clean_data(dre_df)
+    # Como os dados já estão limpos, só precisamos adicionar os metadados
+    dre = add_metadata(dre_df, "income_statement", date_str, company_id)
+    bal = add_metadata(bal_df, "balance_sheet", date_str, company_id)
 
-    #Trata despesas operacionais sempre com valor positivo
+    # Renomeia a coluna 'account' para 'account_std' para manter compatibilidade
+    # com o resto do código que espera essa coluna.
+    dre["account_std"] = dre["account"]
+    bal["account_std"] = bal["account"]
+
+    # A lógica de tratar despesas operacionais ainda é necessária
     dre.loc[dre["account_std"] == "operating_expenses", "amount"] = dre.loc[dre["account_std"] == "operating_expenses", "amount"].abs()
 
-    # padroniza, mapeia, adiciona metadata e limpa
-    bal_df = standardize_columns(bal_raw)
-    bal_df = apply_account_mapping(bal_df)
-    bal_df = add_metadata(bal_df, "balance_sheet", date_str, company_id)
-    bal = clean_data(bal_df)
     return dre, bal
 
 # -----------------------------------------------------------------------------

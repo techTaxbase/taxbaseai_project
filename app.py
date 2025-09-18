@@ -187,9 +187,8 @@ def send_invitation_email_sendgrid(recipient_email: str, temp_password: str):
             <p>Sua conta foi criada com sucesso. Use as credenciais abaixo para acessar a plataforma:</p>
             <ul>
                 <li><strong>Usuário:</strong> {recipient_email}</li>
-                <li><strong>Senha Provisória:</strong> {temp_password}</li>
+                <li><strong>Senha para Acesso:</strong> {temp_password}</li>
             </ul>
-            <p>Recomendamos que você altere sua senha no primeiro acesso.</p>
             <a href="https://taxbase-ai.streamlit.app/" style="background-color: #4CAF50; color: white; padding: 14px 25px; text-align: center; text-decoration: none; display: inline-block;">Acessar a Plataforma</a>
             <br><br>
             <p>Atenciosamente,<br>Equipe TaxbaseAI</p>

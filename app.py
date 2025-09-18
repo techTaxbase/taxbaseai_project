@@ -649,6 +649,11 @@ if authentication_status:
         if st.sidebar.button("Painel do Administrador"):
             st.session_state.page = "Admin"
 
+        if st.session_state.get("page") == "Admin":
+            if st.sidebar.button("⬅️ Voltar"):
+                del st.session_state.page
+                st.rerun()
+
     active_page = st.session_state.get("page", page)
 
     if active_page == "Admin" and role == "admin":
@@ -817,7 +822,7 @@ if authentication_status:
                         else:
                             st.error("Ocorreu um problema no envio para o Dropbox. Verifique as mensagens de erro.")
 
-    if page == "Visão Geral":
+    elif page == "Visão Geral":
         if not company_for_metrics:
             st.error("Selecione uma empresa para visualizar a Visão Geral.")
         else:
@@ -933,7 +938,7 @@ if authentication_status:
             combo = alt.layer(bars, line).resolve_scale(y="independent")
             st.altair_chart(combo, use_container_width=True)
 
-    else:  # TaxbaseAI
+    elif page == "TaxbaseAI":
         st.markdown(
             """
             <style>

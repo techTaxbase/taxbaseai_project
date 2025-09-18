@@ -1,19 +1,25 @@
-# Core
+# Framework e Autenticação
 streamlit
-pandas
-numpy
-streamlit_authenticator
+streamlit-authenticator
 bcrypt
 
-# Data ingestion & APIs
-dropbox
+# Manipulação de Dados e IA
+pandas
+numpy
 openai
-python-dotenv
-altair
-plotly
 faiss-cpu
 sqlalchemy
 
-# Testing
-pytest
-pytest-cov
+# Gráficos e Visualização
+altair
+plotly
+
+# Conectores de Serviços
+dropbox
+sendgrid
+requests
+GitPython
+
+# Suporte para Arquivos Excel
+openpyxl
+xlrd

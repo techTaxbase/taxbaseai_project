@@ -1,4 +1,5 @@
 import streamlit as st
+from datetime import datetime
 import streamlit_authenticator as stauth
 import bcrypt
 import pandas as pd
@@ -12,6 +13,12 @@ import faiss
 import pickle
 import time
 from sqlalchemy import create_engine
+from sendgrid import SendGridAPIClient
+from sendgrid.helpers.mail import Mail
+import git
+import os
+import io
+import xlrd
 
 # -----------------------------------------------------------------------------
 # 0. Settings & Secrets
@@ -54,6 +61,48 @@ def load_users_from_db() -> dict:
         }
     return users
 
+def add_user_to_db(username: str, name: str, password: str, empresa: str, role: str):
+    """Adiciona um novo usuário ao banco de dados com senha hasheada."""
+    hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+    new_user = pd.DataFrame([{
+        "username": username,
+        "name": name,
+        "password": hashed_password,
+        "empresa": empresa,
+        "role": role
+    }])
+    try:
+        new_user.to_sql("usuarios", engine, if_exists="append", index=False)
+        return True
+    except Exception as e:
+        st.error(f"Erro ao adicionar usuário: {e}")
+        return False
+
+def delete_user_from_db(username_to_delete: str) -> bool:
+    """Deleta um usuário do banco de dados."""
+    if not username_to_delete:
+        return False
+    try:
+        # Usar a conexão do engine para executar o comando
+        with engine.connect() as connection:
+            # Usar 'text' para evitar SQL Injection
+            from sqlalchemy import text
+            stmt = text("DELETE FROM usuarios WHERE username = :username")
+            connection.execute(stmt, {"username": username_to_delete})
+            # Importante: para que a deleção seja efetivada
+            connection.commit()
+        return True
+    except Exception as e:
+        st.error(f"Erro ao deletar usuário: {e}")
+        return False
+
+def get_all_users() -> pd.DataFrame:
+    """Carrega todos os usuários para exibição."""
+    try:
+        return pd.read_sql("SELECT username, name, empresa, role FROM usuarios", engine)
+    except:
+        return pd.DataFrame() # Retorna DF vazio se a tabela não existir
+
 def build_credentials(users: dict) -> dict:
     return {
         "usernames": {
@@ -88,6 +137,120 @@ authenticator.login(
 authentication_status = st.session_state.get("authentication_status")
 name                  = st.session_state.get("name")
 username              = st.session_state.get("username")
+
+# Conexão com o novo banco de dados de empresas
+engine_empresas = create_engine("sqlite:///empresas.db")
+
+def load_companies_from_db() -> list[str]:
+    """Carrega a lista de nomes de empresas do banco de dados."""
+    try:
+        df = pd.read_sql("SELECT name FROM empresas", engine_empresas)
+        return df["name"].tolist()
+    except Exception:
+        # Se a tabela não existir, cria e retorna a lista inicial
+        initial_companies = pd.DataFrame({"name": ["CICLOMADE", "JJMAX", "SAUDEFORMA"]})
+        initial_companies.to_sql("empresas", engine_empresas, index=False)
+        return initial_companies["name"].tolist()
+
+def add_company_to_db(company_name: str) -> bool:
+    """Adiciona uma nova empresa ao banco de dados."""
+    company_name = company_name.upper().strip() # Padroniza o nome
+    current_companies = [c.upper() for c in load_companies_from_db()]
+    if company_name in current_companies:
+        st.warning(f"Empresa '{company_name}' já existe.")
+        return False
+    
+    new_company = pd.DataFrame([{"name": company_name}])
+    try:
+        new_company.to_sql("empresas", engine_empresas, if_exists="append", index=False)
+        return True
+    except Exception as e:
+        st.error(f"Erro ao adicionar empresa: {e}")
+        return False
+
+# Carregue a lista de empresas no início do script
+available_companies = load_companies_from_db()
+
+def send_invitation_email_sendgrid(recipient_email: str, temp_password: str):
+    """Envia um e-mail de convite usando a API do SendGrid."""
+    sg_cfg = st.secrets["sendgrid"]
+    
+    # Cria a mensagem usando a classe Mail do SendGrid
+    message = Mail(
+        from_email=sg_cfg["sender_email"],
+        to_emails=recipient_email,
+        subject='Você foi convidado para a TaxbaseAI!',
+        html_content=f"""
+        <html>
+        <body>
+            <h2>Bem-vindo(a) à TaxbaseAI!</h2>
+            <p>Sua conta foi criada com sucesso. Use as credenciais abaixo para acessar a plataforma:</p>
+            <ul>
+                <li><strong>Usuário:</strong> {recipient_email}</li>
+                <li><strong>Senha Provisória:</strong> {temp_password}</li>
+            </ul>
+            <p>Recomendamos que você altere sua senha no primeiro acesso.</p>
+            <a href="https://taxbase-ai.streamlit.app/" style="background-color: #4CAF50; color: white; padding: 14px 25px; text-align: center; text-decoration: none; display: inline-block;">Acessar a Plataforma</a>
+            <br><br>
+            <p>Atenciosamente,<br>Equipe TaxbaseAI</p>
+        </body>
+        </html>
+        """
+    )
+
+    # Tenta enviar o e-mail
+    try:
+        sg = SendGridAPIClient(sg_cfg["api_key"])
+        response = sg.send(message)
+        # O SendGrid retorna um status code 22 Accepted em caso de sucesso
+        if response.status_code == 202:
+            st.info(f"E-mail de convite enviado para {recipient_email}.")
+        else:
+            st.error(f"Erro do SendGrid ao enviar e-mail: Status {response.status_code}")
+            st.error(response.body)
+    except Exception as e:
+        st.error(f"Falha ao tentar enviar e-mail via SendGrid: {e}")
+
+def git_auto_commit(commit_message: str):
+    """
+    Verifica por mudanças nos arquivos .db, e faz add, commit, e push se houver.
+    """
+    try:
+        repo_path = os.getcwd() # Pega o diretório atual do script
+        repo = git.Repo(repo_path)
+
+        # Verifica se o repositório tem alterações não rastreadas ou modificadas
+        if not repo.is_dirty(untracked_files=True):
+            # st.info("Nenhuma alteração no banco de dados para sincronizar.")
+            return
+
+        st.write("Detectei alterações no banco de dados. Sincronizando com o GitHub...")
+
+        # Adiciona os arquivos de banco de dados
+        db_files_to_add = [f for f in ["usuarios.db", "empresas.db"] if os.path.exists(f)]
+        if not db_files_to_add:
+            st.warning("Nenhum arquivo de banco de dados encontrado para o commit.")
+            return
+
+        repo.index.add(db_files_to_add)
+
+        # Faz o commit
+        repo.index.commit(commit_message)
+        st.write(f"✓ Commit realizado: '{commit_message}'")
+
+        # Configura a URL remota com o token para autenticação
+        github_cfg = st.secrets["github"]
+        remote_url = f"https://{github_cfg['username']}:{github_cfg['token']}@github.com/{github_cfg['repo_name']}.git"
+
+        # Faz o push
+        origin = repo.remote(name='origin')
+        origin.set_url(remote_url) # Define a URL com o token temporariamente
+        origin.push()
+
+        st.success("🚀 Alterações sincronizadas com sucesso no GitHub!")
+
+    except Exception as e:
+        st.error(f"Ocorreu um erro durante a sincronização com o Git: {e}")
 
 # -----------------------------------------------------------------------------
 # 1. FAISS Embeddings
@@ -131,6 +294,73 @@ COMMON_COLUMNS = {
     "nome_empresa":"company", "descrição":"account", "descricao":"account",
     "valor":"amount", "saldo_atual":"amount"
 }
+
+def process_accounting_csv(uploaded_file, company_name: str) -> pd.DataFrame | None:
+    """
+    Processa arquivos contábeis que TÊM CABEÇALHO NA PRIMEIRA LINHA,
+    usando o motor correto para cada tipo de Excel.
+    """
+    try:
+        file_name = uploaded_file.name
+        df = None
+        
+        if file_name.endswith('.csv'):
+            content = uploaded_file.getvalue().decode('latin-1')
+            df = pd.read_csv(io.StringIO(content))
+        elif file_name.endswith('.xlsx'):
+            df = pd.read_excel(uploaded_file, engine='openpyxl')
+        elif file_name.endswith('.xls'):
+            df = pd.read_excel(uploaded_file, engine='xlrd')
+
+        if df is None:
+            st.error("Formato de arquivo não suportado.")
+            return None
+
+        # --- AGORA, TRABALHAMOS COM AS COLUNAS LIDAS DIRETAMENTE DO ARQUIVO ---
+
+        # 1. Validação: Verificamos se as colunas que você listou ('nome_cta', 'saldoatu') existem.
+        required_cols = ["nome_cta", "saldoatu"]
+        if not all(col in df.columns for col in required_cols):
+            st.error(f"O arquivo não parece ser um balancete válido. Colunas esperadas: {required_cols}. Colunas encontradas: {df.columns.tolist()}")
+            return None
+
+        # 2. Mapeamento: Renomeamos 'nome_cta' e 'saldoatu' para o padrão do sistema.
+        df = df.rename(columns={"nome_cta": "account", "saldoatu": "amount"})
+
+        # 3. Limpeza (Opcional, mas mantido por segurança)
+        # df = df[df['account'] != 'Total Geral']
+
+        # 4. Padronização
+        df = df.dropna(subset=['amount'])
+        df['amount'] = pd.to_numeric(df['amount'], errors='coerce')
+        df = df.dropna(subset=['amount'])
+        
+        # 5. Adição de Metadados
+        df['company'] = company_name
+
+        final_df = df[["company", "account", "amount"]]
+        
+        return final_df
+
+    except Exception as e:
+        st.error(f"Ocorreu um erro ao processar o arquivo. Detalhe: {e}")
+        return None
+
+def upload_file_to_dropbox(file_bytes: bytes, dropbox_path: str) -> bool:
+    """
+    Faz o upload de um conteúdo em bytes para um caminho específico no Dropbox,
+    sobrescrevendo se o arquivo já existir.
+    """
+    try:
+        dbx.files_upload(
+            file_bytes,
+            dropbox_path,
+            mode=dropbox.files.WriteMode('overwrite')
+        )
+        return True
+    except Exception as e:
+        st.error(f"Erro ao fazer upload para o Dropbox: {e}")
+        return False
 
 @st.cache_data
 def load_csv_from_dropbox(filename: str, expected_cols: list[str]) -> pd.DataFrame | None:
@@ -364,7 +594,7 @@ if authentication_status:
     authenticator.logout("Sair", "sidebar")
     st.sidebar.success(f"Conectado como {user_info['name']} ({role})")
 
-    available_companies = ["CICLOMADE", "JJMAX", "SAUDEFORMA"]
+    available_companies = load_companies_from_db()
     if role == "admin":
         session_companies = st.sidebar.multiselect(
             "Selecione empresas", available_companies, default=available_companies
@@ -398,6 +628,178 @@ if authentication_status:
         df_all = pd.DataFrame()  # vazio
 
     page = st.sidebar.radio("📊 Navegação", ["Visão Geral", "Dashboards", "TaxbaseAI"])
+
+    if role == "admin":
+        if st.sidebar.button("Painel do Administrador"):
+            st.session_state.page = "Admin"
+
+    active_page = st.session_state.get("page", page)
+
+    if active_page == "Admin" and role == "admin":
+        st.header("🔑 Painel do Administrador")
+        admin_tab1, admin_tab2, admin_tab3 = st.tabs(["Gerenciar Usuários", "Gerenciar Empresas", "📤 Upload de Relatórios"])
+
+        with admin_tab1:
+            st.subheader("➕ Criar Novo Usuário")
+            with st.form("new_user_form", clear_on_submit=True):
+                new_email = st.text_input("E-mail do Usuário (para login)")
+                new_username = st.text_input("Usuário (para login)")
+                new_name = st.text_input("Nome Completo")
+                new_password = st.text_input("Senha Provisória", type="password")
+                # Assumindo que a lista de empresas virá de um BD ou está definida
+                # (Vamos implementar isso na seção 3)
+                available_companies = load_companies_from_db() # Placeholder
+                assigned_company = st.selectbox("Empresa de Acesso", options=available_companies)
+                assigned_role = st.selectbox("Role", options=["user", "admin"])
+        
+                submitted = st.form_submit_button("Criar Usuário")
+
+                if submitted:
+                    if new_email and new_name and new_password:
+                        if add_user_to_db(username=new_email, name=new_name, password=new_password, empresa=assigned_company, role=assigned_role):
+                            st.success(f"Usuário '{new_name}' criado com sucesso!")
+
+                            send_invitation_email_sendgrid(recipient_email=new_email, temp_password=new_password)
+                            git_auto_commit(commit_message=f"feat: Adiciona novo usuário '{new_name}'")
+                        else:
+                            st.error("Não foi possível criar o usuário.")
+                    else:
+                        st.warning("Por favor, preencha todos os campos.")
+
+            st.divider()
+            st.subheader("👥 Usuários Existentes")
+            st.dataframe(get_all_users(), use_container_width=True)
+            st.divider()
+
+            st.subheader("🗑️ Deletar Usuário")
+            # Pega a lista de todos os usernames, exceto o do admin logado
+            users_df = get_all_users()
+            # Garante que a coluna 'username' existe antes de tentar filtrar
+            if not users_df.empty and 'username' in users_df.columns:
+                users_list = users_df["username"].tolist()
+                # Impede que o admin se delete
+                current_admin_username = st.session_state.get("username")
+                if current_admin_username in users_list:
+                    users_list.remove(current_admin_username)
+
+                user_to_delete = st.selectbox(
+                    "Selecione o usuário para deletar",
+                    options=users_list,
+                    index=None,
+                    placeholder="Escolha um usuário..."
+                )
+
+                if user_to_delete:
+                    st.warning(f"**Atenção:** Você está prestes a deletar o usuário **{user_to_delete}**. Esta ação é irreversível.")
+                    if st.button(f"Confirmar Deleção de {user_to_delete}"):
+                        if delete_user_from_db(user_to_delete):
+                            st.success(f"Usuário '{user_to_delete}' deletado com sucesso!")
+                            git_auto_commit(f"refactor: Deleta usuário '{user_to_delete}'")
+                            time.sleep(2)
+                            st.rerun()
+                        else:
+                            st.error("Falha ao deletar o usuário.")
+                else:
+                    st.info("Nenhum outro usuário para deletar.")
+
+        with admin_tab2:
+            st.subheader("🏢 Adicionar Nova Empresa")
+            with st.form("new_company_form", clear_on_submit=True):
+                new_company_name = st.text_input("Nome da Nova Empresa")
+                submitted_company = st.form_submit_button("Adicionar Empresa")
+
+                if submitted_company and new_company_name:
+                    if add_company_to_db(new_company_name):
+                        st.success(f"Empresa '{new_company_name.upper()}' adicionada com sucesso!")
+                        git_auto_commit(commit_message=f"feat: Adiciona nova empresa '{new_company_name.upper()}'")
+                        st.info("A página será recarregada para atualizar as listas.")
+                        time.sleep(3) # Pausa para o usuário ler a mensagem
+                        st.rerun() # Recarrega a página para que a nova empresa apareça nas seleções
+                    else:
+                        st.error("Falha ao adicionar a empresa.")
+
+            st.divider()
+            st.subheader("📋 Empresas Cadastradas")
+            st.dataframe(pd.DataFrame({"Nome": load_companies_from_db()}), use_container_width=True)
+
+        with admin_tab3:
+            st.subheader("Upload de Relatórios Mensais (DRE / Balanço)")
+            st.info("Esta área está adaptada para ler os arquivos de balancete (com cabeçalho e rodapé) extraídos do sistema contábil.")
+
+            # Usar um formulário garante que todos os dados sejam enviados de uma vez
+            with st.form("upload_form_v3", clear_on_submit=True):
+                company_to_upload = st.selectbox(
+                    "Para qual empresa é este relatório?",
+                    options=load_companies_from_db(),
+                    index=None,
+                    placeholder="Selecione a empresa"
+                )
+
+                # --- INÍCIO DA CORREÇÃO DE DATA ---
+                # Criamos listas para os seletores de mês e ano
+                current_year = datetime.now().year
+        
+                col1, col2 = st.columns(2)
+                with col1:
+                    selected_month = st.selectbox(
+                        "Mês de Referência",
+                        options=range(1, 13),
+                        format_func=lambda month: f"{month:02d}", # Formata para "01", "02", etc.
+                        index=None,
+                        placeholder="Selecione o Mês"
+                    )
+                with col2:
+                    selected_year = st.selectbox(
+                        "Ano de Referência",
+                        options=range(current_year - 5, current_year + 1), # Últimos 5 anos + ano atual
+                        index=None,
+                        placeholder="Selecione o Ano"
+                    )
+
+                report_type = st.selectbox(
+                    "Qual o tipo de relatório?",
+                    options=["DRE", "BALANCO"],
+                    index=None,
+                    placeholder="Selecione o tipo"
+                )
+                # --- FIM DA CORREÇÃO DE DATA ---
+
+                uploaded_file = st.file_uploader(
+                    "Arraste ou selecione o arquivo (CSV, XLS ou XLSX)",
+                    type=["csv", "xls", "xlsx"]
+                )
+
+                # O botão de envio está DENTRO do 'with st.form'
+                submitted = st.form_submit_button("Processar e Enviar Arquivo")
+
+            # --- Lógica do Backend ---
+            if submitted:
+                if not all([company_to_upload, selected_month, selected_year, uploaded_file]):
+                    st.warning("Por favor, preencha todos os campos e anexe um arquivo.")
+                else:
+                    # Reconstrói a data no formato que o sistema precisa
+                    date_str = f"{selected_year}-{selected_month:02d}"
+
+                    cleaned_df = process_accounting_csv(uploaded_file, company_to_upload)
+
+                    # A função retorna um DataFrame se tudo deu certo, ou None se deu erro
+                    if cleaned_df is not None:
+                        new_filename = f"{report_type}_{date_str}_{company_to_upload}.csv"
+                        full_dropbox_path = f"{BASE_PATH}/{new_filename}"
+
+                        st.info(f"Arquivo processado com sucesso. Enviando para o sistema como '{new_filename}'...")
+
+                        # 3. Converte o DataFrame limpo de volta para um CSV em memória
+                        # Isso garante que o arquivo salvo no Dropbox seja simples e padronizado
+                        csv_bytes = cleaned_df.to_csv(index=False).encode('utf-8')
+
+                        # 4. Faz o upload para o Dropbox
+                        if upload_file_to_dropbox(csv_bytes, full_dropbox_path):
+                            st.success(f"🎉 Sucesso! O relatório '{new_filename}' foi processado e salvo no sistema.")
+                            st.dataframe(cleaned_df.head()) # Mostra uma prévia dos dados limpos
+                            st.balloons()
+                        else:
+                            st.error("Ocorreu um problema no envio para o Dropbox. Verifique as mensagens de erro.")
 
     if page == "Visão Geral":
         if not company_for_metrics:

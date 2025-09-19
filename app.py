@@ -622,7 +622,7 @@ if authentication_status:
     if not session_companies:
         st.sidebar.error("Selecione ao menos uma empresa válida.")
 
-    session_date = st.sidebar.date_input("Mês de Referência", value=pd.to_datetime("2024-12-31"))
+    session_date = st.sidebar.date_input("Mês de Referência", value=pd.to_datetime("2025-06-30"))
     date_str = session_date.strftime("%Y-%m")
 
     company_for_metrics = st.sidebar.selectbox("Empresa para Métricas", session_companies) if session_companies else None

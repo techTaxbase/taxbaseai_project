@@ -1,5 +1,7 @@
 import streamlit as st
+import calendar
 from datetime import datetime
+from dateutil.relativedelta import relativedelta
 import streamlit_authenticator as stauth
 import bcrypt
 import pandas as pd
@@ -294,15 +296,84 @@ COMMON_COLUMNS = {
     "valor":"amount", "saldo_atual":"amount"
 }
 
+def process_contas_a_pagar_csv(uploaded_file, company_name: str) -> pd.DataFrame | None:
+    """Processa arquivos de Contas a Pagar de diferentes formatos."""
+    try:
+        df = pd.read_excel(uploaded_file, engine='openpyxl') if uploaded_file.name.endswith(('.xls', '.xlsx')) else pd.read_csv(uploaded_file)
+        
+        rename_map = None
+        
+        # --- Lógica para identificar o formato do arquivo ---
+        
+        # Formato 1 (o primeiro que você enviou)
+        if all(col in df.columns for col in ['DATA DE VENCIMENTO', 'SALDO A PAGAR', 'NOME DO FORNECEDOR']):
+            rename_map = {
+                'NOME DO FORNECEDOR': 'fornecedor',
+                'DATA DE VENCIMENTO': 'vencimento',
+                'SALDO A PAGAR': 'saldo',
+                'EMPRESA': 'company'
+            }
+        
+        # Formato 2 (o novo arquivo)
+        elif all(col in df.columns for col in ['Dt. Contabil', 'Valor', 'Razão Social']):
+            st.warning("Aviso: O arquivo não contém 'Data de Vencimento'. Usando 'Dt. Contabil' como substituto. A análise de vencidos pode não estar correta.")
+            rename_map = {
+                'Razão Social': 'fornecedor',
+                'Dt. Contabil': 'vencimento', # Usando como substituto
+                'Valor': 'saldo',
+                'Fantasia': 'company' # Assumindo que Fantasia pode ser a empresa
+            }
+
+        if rename_map is None:
+            st.error(f"Arquivo de Contas a Pagar inválido. Não foi possível identificar as colunas necessárias. Colunas encontradas: {df.columns.tolist()}")
+            return None
+            
+        df_clean = df.rename(columns=rename_map)
+
+        # Converte as colunas para os tipos corretos
+        df_clean['vencimento'] = pd.to_datetime(df_clean['vencimento'], errors='coerce')
+        df_clean['saldo'] = pd.to_numeric(df_clean['saldo'], errors='coerce')
+        
+        # Garante que a coluna 'company' exista, se não foi mapeada
+        if 'company' not in df_clean.columns:
+            df_clean['company'] = company_name
+
+        df_clean = df_clean.dropna(subset=['vencimento', 'saldo', 'fornecedor'])
+        
+        return df_clean[['company', 'fornecedor', 'vencimento', 'saldo']]
+
+    except Exception as e:
+        st.error(f"Ocorreu um erro ao processar o arquivo de Contas a Pagar. Detalhe: {e}")
+        return None
+
+def load_data_for_period(companies: list, start_date, end_date) -> pd.DataFrame:
+    """Carrega e consolida os dados de DRE e Balanço para um período e várias empresas."""
+    all_data = []
+    
+    # Gera uma lista de todos os meses no intervalo
+    month_range = pd.date_range(start_date, end_date, freq='MS').strftime("%Y-%m").tolist()
+
+    for comp in companies:
+        for month_str in month_range:
+            dre, bal = load_and_clean(comp, month_str)
+            if dre is not None:
+                all_data.append(dre)
+            if bal is not None:
+                all_data.append(bal)
+
+    if not all_data:
+        return pd.DataFrame() # Retorna um DataFrame vazio se nenhum dado for encontrado
+        
+    return pd.concat(all_data, ignore_index=True)
+
 def process_accounting_csv(uploaded_file, company_name: str) -> pd.DataFrame | None:
     """
-    Processa arquivos contábeis que TÊM CABEÇALHO NA PRIMEIRA LINHA,
-    usando o motor correto para cada tipo de Excel.
+    Processa arquivos contábeis de diferentes formatos, adaptando-se às colunas encontradas.
     """
     try:
         file_name = uploaded_file.name
         df = None
-        
+
         if file_name.endswith('.csv'):
             content = uploaded_file.getvalue().decode('latin-1')
             df = pd.read_csv(io.StringIO(content))
@@ -310,31 +381,38 @@ def process_accounting_csv(uploaded_file, company_name: str) -> pd.DataFrame | N
             df = pd.read_excel(uploaded_file, engine='openpyxl')
         elif file_name.endswith('.xls'):
             df = pd.read_excel(uploaded_file, engine='xlrd')
-
+        
         if df is None:
             st.error("Formato de arquivo não suportado.")
             return None
 
-        # --- AGORA, TRABALHAMOS COM AS COLUNAS LIDAS DIRETAMENTE DO ARQUIVO ---
+        # --- LÓGICA "CAMALEÃO" PARA ENCONTRAR AS COLUNAS CORRETAS ---
+        rename_map = None
 
-        # 1. Validação: Verificamos se as colunas que você listou ('nome_cta', 'saldoatu') existem.
-        required_cols = ["nome_cta", "saldoatu"]
-        if not all(col in df.columns for col in required_cols):
-            st.error(f"O arquivo não parece ser um balancete válido. Colunas esperadas: {required_cols}. Colunas encontradas: {df.columns.tolist()}")
+        # Procura pelo formato 1 (ex: Balancete)
+        if "nome_cta" in df.columns and "saldoatu_cta" in df.columns:
+            rename_map = {"nome_cta": "account", "saldoatu_cta": "amount"}
+        
+        # Procura pelo formato 2 (ex: DRE)
+        elif "nomeconta" in df.columns and "valor" in df.columns:
+            rename_map = {"nomeconta": "account", "valor": "amount"}
+            
+        # Adicione outros formatos aqui no futuro, se necessário
+        # elif "OutraColunaConta" in df.columns and "OutraColunaValor" in df.columns:
+        #     rename_map = {"OutraColunaConta": "account", "OutraColunaValor": "amount"}
+
+        if rename_map is None:
+            st.error(f"Não foi possível identificar as colunas de 'conta' e 'valor' neste arquivo. Colunas encontradas: {df.columns.tolist()}")
             return None
+        # ----------------------------------------------------------------
 
-        # 2. Mapeamento: Renomeamos 'nome_cta' e 'saldoatu' para o padrão do sistema.
-        df = df.rename(columns={"nome_cta": "account", "saldoatu": "amount"})
-
-        # 3. Limpeza (Opcional, mas mantido por segurança)
-        # df = df[df['account'] != 'Total Geral']
-
-        # 4. Padronização
+        # O resto do código usa o 'rename_map' que foi escolhido acima
+        df = df.rename(columns=rename_map)
+        
         df = df.dropna(subset=['amount'])
         df['amount'] = pd.to_numeric(df['amount'], errors='coerce')
         df = df.dropna(subset=['amount'])
         
-        # 5. Adição de Metadados
         df['company'] = company_name
 
         final_df = df[["company", "account", "amount"]]
@@ -362,7 +440,7 @@ def upload_file_to_dropbox(file_bytes: bytes, dropbox_path: str) -> bool:
         return False
 
 @st.cache_data
-def load_csv_from_dropbox(filename: str, expected_cols: list[str]) -> pd.DataFrame | None:
+def load_csv_from_dropbox(filename: str, expected_cols: list[str] | None) -> pd.DataFrame | None:
     path = f"{BASE_PATH}/{filename}"
     try:
         _, res = dbx.files_download(path=path)
@@ -370,9 +448,14 @@ def load_csv_from_dropbox(filename: str, expected_cols: list[str]) -> pd.DataFra
         st.warning(f"Arquivo não encontrado: {filename}")
         return None
     df = pd.read_csv(BytesIO(res.content))
-    if missing := set(expected_cols) - set(df.columns):
-        st.error(f"Colunas faltando em {filename}: {missing}")
-        return None
+    
+    # --- CORREÇÃO ADICIONADA AQUI ---
+    # Só faz a verificação de colunas se 'expected_cols' não for None
+    if expected_cols is not None:
+        if missing := set(expected_cols) - set(df.columns):
+            st.error(f"Colunas faltando em {filename}: {missing}")
+            return None
+            
     return df
 
 def standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -456,73 +539,61 @@ def load_and_clean(company_id: str, date_str: str) -> tuple[pd.DataFrame, pd.Dat
 # 3. Cálculo de Indicadores
 # -----------------------------------------------------------------------------
 def compute_indicators(dre: pd.DataFrame, bal: pd.DataFrame) -> pd.DataFrame:
-    # --- DRE: sumários por padrão, em UPPER para regex mais seguro
+    # --- DRE: Lógica de cálculo com EBIT e EBITDA separados ---
     d = dre.copy()
-    d["DESC"] = d["account"].str.upper()
+    d["DESC"] = d["account"].astype(str).str.strip().str.upper()
 
     def sum_dre(regex: str, absolute: bool = False) -> float:
-        """Soma todos os amounts cujas DESCRIÇÕES batem o regex."""
-        vals = d.loc[d["DESC"].str.contains(regex, regex=True), "amount"]
+        vals = d.loc[d["DESC"].str.contains(regex, regex=True, na=False), "amount"]
         return vals.abs().sum() if absolute else vals.sum()
 
-    # 1) Receita Líquida (linha exata)
-    receita_liq = sum_dre(r"^RECEITA LÍQUIDA$")
+    # 1) Receita Líquida
+    receitas_brutas = sum_dre(r"RECEITA BRUTAS|RECEITA DE PRESTAÇÃO")
+    deducoes_impostos = sum_dre(r"CANCELAMENTO E DEVOLUÇÕES|IMPOSTOS SOBRE VENDAS", absolute=True)
+    receita_liq = receitas_brutas - deducoes_impostos
 
-    # 2) Lucro Bruto: se houver linha, usamos ela; senão receita - custos
-    lucro_bruto = sum_dre(r"^LUCRO BRUTO$") or (
-        receita_liq - sum_dre(r"CUSTOS DOS PRODUTOS VENDIDOS|CUSTOS DE MERCADORIAS", absolute=True)
-    )
+    # 2) Custos
+    custos = sum_dre(r"MATERIAL APLICADO|SERVICOS TOMADOS", absolute=True)
 
-    # 3) Depreciações (tudo que contenha "DEPRECIA")
+    # 3) Lucro Bruto
+    lucro_bruto = receita_liq - custos
+
+    # 4) Despesas Operacionais
+    despesas_op = sum_dre(r"DESPESAS COM ENTREGA|DESPESAS GERAIS", absolute=True)
+    
+    # 5) Lucro Operacional (EBIT)
+    lucro_operacional_ebit = lucro_bruto - despesas_op
+
+    # 6) Depreciação (será 0 se não encontrar a conta, o que é o caso atual)
     deprec = sum_dre(r"DEPRECIA", absolute=True)
 
-    # 4) Despesas Operacionais = soma de todas as linhas que começam com "DESPESAS"
-    total_desp = sum_dre(r"^(-\s*)?DESPESAS", absolute=True)
-    despesas_op = total_desp - deprec
+    # 7) EBITDA (EBIT + Depreciação)
+    ebitda = lucro_operacional_ebit + deprec
 
-    # 5) EBITDA: prefira RESULTADO OPERACIONAL + depreciações
-    resultado_oper = sum_dre(r"^RESULTADO OPERACIONAL$")
-    if resultado_oper:
-        ebitda = resultado_oper + deprec
-    else:
-        # fallback para casos sem "RESULTADO OPERACIONAL"
-        ebitda = lucro_bruto - despesas_op
+    # 8) Lucro Líquido (Aproximação baseada no EBIT, pois não há juros/impostos)
+    lucro_liq = lucro_operacional_ebit
 
-    # 6) Lucro Líquido ou Prejuízo
-    lucro_liq = sum_dre(r"^LUCRO LÍQUIDO DO EXERCÍCIO$|^LUCRO LÍQUIDO$|^PREJUÍZO DO EXERCÍCIO$")
-
-    # --- balanço patrimonial ---
+    # --- Balanço Patrimonial (Lógica mantida) ---
     b = bal.copy()
-    b["DESC"] = b["account"].str.upper()
-    def sum_bal(regex: str, absolute: bool = False) -> float:
-        vals = b.loc[b["DESC"].str.contains(regex, regex=True), "amount"]
-        return vals.abs().sum() if absolute else vals.sum()
+    b["DESC"] = b["account"].astype(str).str.strip().str.upper()
+
+    def sum_bal(regex: str) -> float:
+        return b.loc[b["DESC"].str.contains(regex, regex=True, na=False), "amount"].abs().sum()
 
     ativo_circ = sum_bal(r"^ATIVO CIRCULANTE$")
     pass_circ  = sum_bal(r"^PASSIVO CIRCULANTE$")
-    estoque    = sum_bal(r"^ESTOQUE$")
-
-    liquidez_corrente = ativo_circ / pass_circ if pass_circ else None
-    liquidez_seca     = (ativo_circ - estoque) / pass_circ if pass_circ else None
-
-    # Ativos totais: tenta “ATIVO”: senão circulante + permanente
-    total_ativo = sum_bal(r"^ATIVO$") or (
-        sum_bal(r"^ATIVO CIRCULANTE$") +
-        sum_bal(r"ATIVO PERMANENTE|ATIVO NÃO-CIRCULANTE")
-    )
-    # passivos totais = circulante + não-circulante
-    pass_circ  = sum_bal(r"^PASSIVO CIRCULANTE$",   absolute=True)
-    pass_ncirc = sum_bal(r"PASSIVO NÃO-CIRCULANTE", absolute=True)
+    estoque    = sum_bal(r"^ESTOQUES$")
+    liquidez_corrente = ativo_circ / pass_circ if pass_circ else 0
+    liquidez_seca     = (ativo_circ - estoque) / pass_circ if pass_circ else 0
+    total_ativo = sum_bal(r"^ATIVO$")
+    pass_ncirc = sum_bal(r"PASSIVO N[AÃ]O CIRCULANTE")
     total_pass = pass_circ + pass_ncirc
-    endividamento = total_pass / total_ativo if total_ativo else None
-
-    # primeiro tenta achar patrimônio líquido expresso no CSV
-    patr_liq = sum_bal(r"^PATRIMÔNIO LÍQUIDO$")
+    endividamento = total_pass / total_ativo if total_ativo else 0
+    patr_liq = sum_bal(r"^PATRIMONIO LIQUIDO$")
     if patr_liq == 0:
-        # fallback: usar lucros ou prejuízos acumulados
-        patr_liq = sum_bal(r"LUCROS OU PREJUÍZOS ACUMULADOS", absolute=True)
-    roa  = lucro_liq / total_ativo if total_ativo else None
-    roe  = lucro_liq / patr_liq if patr_liq else None
+        patr_liq = total_ativo - total_pass
+    roa = lucro_liq / total_ativo if total_ativo else 0
+    roe = lucro_liq / patr_liq if patr_liq else 0
 
     return pd.DataFrame({
         "Indicador": [
@@ -622,8 +693,39 @@ if authentication_status:
     if not session_companies:
         st.sidebar.error("Selecione ao menos uma empresa válida.")
 
-    session_date = st.sidebar.date_input("Mês de Referência", value=pd.to_datetime("2025-06-30"))
-    date_str = session_date.strftime("%Y-%m")
+    st.sidebar.markdown("##### Período de Análise")
+    # --- Lógica para os valores padrão ---
+    today = datetime.now().date()
+    default_start = today - relativedelta(months=5)
+
+    # Gera listas de anos e meses para os seletores
+    year_list = list(range(today.year + 1, today.year - 6, -1))
+    month_list = list(range(1, 13))
+
+    # --- Cria a interface com 4 seletores em colunas ---
+    col1, col2 = st.sidebar.columns(2)
+    with col1:
+        start_month = st.selectbox("Mês Inicial", month_list, index=month_list.index(default_start.month), format_func=lambda m: f"{m:02d}")
+        end_month = st.selectbox("Mês Final", month_list, index=month_list.index(today.month), format_func=lambda m: f"{m:02d}")
+    with col2:
+        start_year = st.selectbox("Ano Inicial", year_list, index=year_list.index(default_start.year))
+        end_year = st.selectbox("Ano Final", year_list, index=year_list.index(today.year))
+
+    # --- Monta as datas de início e fim com base na seleção ---
+    try:
+        start_period = datetime(start_year, start_month, 1).date()
+        last_day_of_month = calendar.monthrange(end_year, end_month)[1]
+        end_period = datetime(end_year, end_month, last_day_of_month).date()
+
+        if start_period > end_period:
+            st.sidebar.error("A data inicial não pode ser posterior à data final.")
+            st.stop()
+
+    except Exception as e:
+        st.sidebar.error("Período inválido. Verifique as datas.")
+        st.stop()
+
+    date_str = end_period.strftime("%Y-%m")
 
     company_for_metrics = st.sidebar.selectbox("Empresa para Métricas", session_companies) if session_companies else None
 
@@ -637,12 +739,12 @@ if authentication_status:
         all_dre.append(dre)
         all_bal.append(bal)
 
-    if all_dre and all_bal:
-        df_all = pd.concat(all_dre + all_bal, ignore_index=True)
+    if session_companies:
+        df_all = load_data_for_period(session_companies, start_period, end_period)
     else:
-        df_all = pd.DataFrame()  # vazio
+        df_all = pd.DataFrame()
 
-    page = st.sidebar.radio("📊 Navegação", ["Visão Geral", "Dashboards", "TaxbaseAI"])
+    page = st.sidebar.radio("📊 Navegação", ["Visão Geral", "Contas a Pagar", "Dashboards", "TaxbaseAI"])
 
     if role == "admin":
         if st.sidebar.button("Painel do Administrador"):
@@ -778,7 +880,7 @@ if authentication_status:
 
                 report_type = st.selectbox(
                     "Qual o tipo de relatório?",
-                    options=["DRE", "BALANCO"],
+                    options=["DRE", "BALANCO", "CONTASAPAGAR"],
                     index=None,
                     placeholder="Selecione o tipo"
                 )
@@ -797,13 +899,18 @@ if authentication_status:
                 if not all([company_to_upload, selected_month, selected_year, uploaded_file]):
                     st.warning("Por favor, preencha todos os campos e anexe um arquivo.")
                 else:
-                    # Reconstrói a data no formato que o sistema precisa
-                    date_str = f"{selected_year}-{selected_month:02d}"
+                    # --- INÍCIO DO BLOCO DE LÓGICA ATUALIZADO ---
+                    cleaned_df = None # Inicia a variável como nula
 
-                    cleaned_df = process_accounting_csv(uploaded_file, company_to_upload)
+                    # Decide qual função de processamento usar com base no tipo de relatório
+                    if report_type in ["DRE", "BALANCO"]:
+                        cleaned_df = process_accounting_csv(uploaded_file, company_to_upload, report_type)
+                    elif report_type == "CONTASAPAGAR":
+                        cleaned_df = process_contas_a_pagar_csv(uploaded_file, company_to_upload)
 
                     # A função retorna um DataFrame se tudo deu certo, ou None se deu erro
                     if cleaned_df is not None:
+                        date_str = end_period.strftime("%Y-%m") 
                         new_filename = f"{report_type}_{date_str}_{company_to_upload}.csv"
                         full_dropbox_path = f"{BASE_PATH}/{new_filename}"
 
@@ -875,67 +982,145 @@ if authentication_status:
 
                 st.dataframe(rpt_disp, use_container_width=True)
 
-    elif page == "Dashboards":
-        if df_all.empty:
-            st.info("Nenhum dado disponível para as seleções atuais.")
+    elif active_page == "Contas a Pagar":
+        st.header("💸 Análise de Contas a Pagar")
+
+        # --- Lógica para carregar os dados (permanece a mesma) ---
+        all_ap_data = []
+        month_range = pd.date_range(start_period, end_period, freq='MS').strftime("%Y-%m").tolist()
+        for comp in session_companies:
+            for month_str in month_range:
+                df_ap_month = load_monthly_csv_from_dropbox(
+                    prefix_month=f"CONTASAPAGAR_{month_str}",
+                    company_id=comp,
+                    expected_cols=None # Lemos sem validar colunas aqui, a validação está no processamento
+                )
+                if df_ap_month is not None:
+                    all_ap_data.append(df_ap_month)
+
+        if not all_ap_data:
+            st.info("Nenhum dado de Contas a Pagar encontrado para o período selecionado.")
         else:
-            st.header("📈 Dashboards")
-            base = alt.Chart(df_all).mark_bar().encode(
-                x="account_std:N",
-                y="amount:Q",
-                color="company_id:N",
-                tooltip=["company_id","account_std","amount"]
-            )
-            st.altair_chart(base, use_container_width=True)
+            df_ap = pd.concat(all_ap_data, ignore_index=True)
+            # Renomeia colunas para o padrão (usando o formato do seu último arquivo)
+            # Adicionando uma verificação para evitar erros se as colunas não existirem
+            if 'Valor' in df_ap.columns and 'Dt. Contabil' in df_ap.columns:
+                df_ap = df_ap.rename(columns={'Valor': 'saldo', 'Dt. Contabil': 'data_contabil', 'Razão Social': 'fornecedor'})
+                df_ap['data_contabil'] = pd.to_datetime(df_ap['data_contabil'], errors='coerce')
+            else: # Fallback para o primeiro formato de arquivo
+                df_ap = df_ap.rename(columns={'vencimento': 'data_contabil'})
+                df_ap['data_contabil'] = pd.to_datetime(df_ap['data_contabil'], errors='coerce')
 
-            # 1) Composição do Ativo (pizza)
-            st.subheader("Composição do Ativo")
-            df_asset = df_all.query("statement=='balance_sheet' and amount>0")
-            pie_asset = df_asset.groupby("account_std")["amount"].sum().reset_index()
-            fig_asset = px.pie(
-                pie_asset, 
-                names="account_std", 
-                values="amount", 
-                title="Ativos por Conta"
-            )
-            st.plotly_chart(fig_asset, use_container_width=True)
+            # --- KPIs ---
+            total_pago_periodo = df_ap['saldo'].sum()
+            st.metric("Total Contabilizado no Período", f"R$ {total_pago_periodo:,.2f}")
 
-            # 2) Composição do Passivo (pizza)
-            st.subheader("Composição do Passivo")
-            df_liab = df_all.query("statement=='balance_sheet' and amount<0").copy()
-            df_liab["amount"] = df_liab["amount"].abs()
-            pie_liab = df_liab.groupby("account_std")["amount"].sum().reset_index()
-            fig_liab = px.pie(
-                pie_liab, 
-                names="account_std", 
-                values="amount", 
-                title="Passivos por Conta"
-            )
-            st.plotly_chart(fig_liab, use_container_width=True)
+            # --- NOVO GRÁFICO: Histórico de Pagamentos por Mês ---
+            st.subheader("🗓️ Histórico de Pagamentos por Mês")
+        
+            # Cria uma coluna de 'mês' a partir da Data Contábil
+            df_ap['mes_contabil'] = df_ap['data_contabil'].dt.to_period('M').astype(str)
+            pagamentos_mes = df_ap.groupby('mes_contabil')['saldo'].sum().reset_index()
 
-            # 3) Pareto de Despesas Operacionais
-            st.subheader("Pareto de Despesas Operacionais")
-            df_desp = df_all.query(
-                "statement=='income_statement' and amount<0"
-            ).copy()
-            df_desp["abs_amount"] = df_desp["amount"].abs()
-            pareto = (
-                df_desp.groupby("account_std")["abs_amount"]
-                .sum()
-                .reset_index()
-                .sort_values("abs_amount", ascending=False)
+            chart_pagamentos = alt.Chart(pagamentos_mes).mark_bar().encode(
+                x=alt.X('mes_contabil', title='Mês Contábil', sort=None),
+                y=alt.Y('saldo', title='Total Pago (R$)'),
+                tooltip=['mes_contabil', alt.Tooltip('saldo', format=',.2f')]
+            ).properties(height=400)
+            st.altair_chart(chart_pagamentos, use_container_width=True)
+
+            # --- Gráfico de Top Fornecedores (Mantido) ---
+            st.subheader("🏢 Top 10 Fornecedores")
+            if 'fornecedor' in df_ap.columns:
+                top_fornecedores = df_ap.groupby('fornecedor')['saldo'].sum().nlargest(10).reset_index()
+            
+                chart_top_forn = alt.Chart(top_fornecedores).mark_bar().encode(
+                    x=alt.X('saldo', title='Saldo Pago (R$)'),
+                    y=alt.Y('fornecedor', title='Fornecedor', sort='-x'),
+                    tooltip=['fornecedor', alt.Tooltip('saldo', format=',.2f')]
+                ).properties(height=500)
+                st.altair_chart(chart_top_forn, use_container_width=True)
+            else:
+                st.warning("Coluna 'fornecedor' não encontrada para gerar o gráfico de Top Fornecedores.")
+
+            # --- Tabela Detalhada (Mantida) ---
+            with st.expander("Ver todos os lançamentos do período"):
+                st.dataframe(df_ap)
+
+    elif page == "Dashboards":
+        st.header("📈 Dashboards de Análise de Resultados")
+        if df_all.empty:
+            st.info("Nenhum dado de DRE disponível para as seleções atuais.")
+        else:
+            # Filtra apenas os dados de DRE para estes gráficos
+            df_dre = df_all[df_all['statement'] == 'income_statement'].copy()
+            df_dre['month'] = df_dre['ref_date'].dt.to_period('M').astype(str)
+
+            df_dre['DESC'] = df_dre['account'].astype(str).str.strip().str.upper()
+
+            # --- Gráfico 1: Faturamento Mês a Mês ---
+            st.subheader("📊 Faturamento (Receita Líquida) Mês a Mês")
+        
+            # Calcula a Receita Líquida por mês
+            df_dre['receitas'] = df_dre.apply(
+                lambda row: row['amount'] if 'RECEITA' in row['DESC'] else 0, axis=1
             )
-            pareto["cum_pct"] = pareto["abs_amount"].cumsum() / pareto["abs_amount"].sum()
-            bars = alt.Chart(pareto).mark_bar().encode(
-                x="account_std:N",
-                y="abs_amount:Q"
+            df_dre['deducoes'] = df_dre.apply(
+                lambda row: abs(row['amount']) if 'CANCELAMENTO' in row['DESC'] or 'IMPOSTOS' in row['DESC'] else 0, axis=1
             )
-            line = alt.Chart(pareto).mark_line(color="red").encode(
-                x="account_std:N",
-                y=alt.Y("cum_pct:Q", axis=alt.Axis(format="%"))
+        
+            faturamento_mensal = df_dre.groupby('month').apply(
+                lambda x: x['receitas'].sum() - x['deducoes'].sum()
+            ).reset_index(name='faturamento')
+
+            chart_fat = alt.Chart(faturamento_mensal).mark_bar().encode(
+                x=alt.X('month', title='Mês', sort=None),
+                y=alt.Y('faturamento', title='Faturamento (R$)'),
+                tooltip=['month', alt.Tooltip('faturamento', format=',.2f')]
+            ).properties(
+                height=400
             )
-            combo = alt.layer(bars, line).resolve_scale(y="independent")
-            st.altair_chart(combo, use_container_width=True)
+            st.altair_chart(chart_fat, use_container_width=True)
+
+            # --- Gráfico 2: Valores Gastos Mês a Mês ---
+            st.subheader("📊 Valores Gastos (Custos + Despesas) Mês a Mês")
+
+            df_dre['gastos'] = df_dre.apply(
+                lambda row: abs(row['amount']) if 'CUSTO' in row['DESC'] or 'DESPESAS' in row['DESC'] or 'MATERIAL' in row['DESC'] or 'SERVICOS' in row['DESC'] else 0, axis=1
+            )
+            gastos_mensais = df_dre.groupby('month')['gastos'].sum().reset_index()
+
+            chart_gastos = alt.Chart(gastos_mensais).mark_bar(color='firebrick').encode(
+                x=alt.X('month', title='Mês', sort=None),
+                y=alt.Y('gastos', title='Gastos (R$)'),
+                tooltip=['month', alt.Tooltip('gastos', format=',.2f')]
+            ).properties(
+                height=400
+            )
+            st.altair_chart(chart_gastos, use_container_width=True)
+
+            # --- Gráfico 3: Proporcionalidade de Despesas e Custos ---
+            st.subheader("🍕 Proporcionalidade de Despesas e Custos")
+            st.markdown(f"Análise para o último mês do período selecionado: **{end_period.strftime('%m/%Y')}**")
+
+            # Filtra os gastos apenas do último mês
+            last_month_str = pd.to_datetime(end_period).to_period('M').strftime('%Y-%m')
+            gastos_ultimo_mes = df_dre[df_dre['month'] == last_month_str]
+        
+            # Agrupa por conta para o gráfico de pizza
+            pizza_data = gastos_ultimo_mes.groupby('account')['gastos'].sum().reset_index()
+            pizza_data = pizza_data[pizza_data['gastos'] > 0] # Remove contas sem gastos
+
+            if not pizza_data.empty:
+                fig_pie = px.pie(
+                    pizza_data,
+                    names='account',
+                    values='gastos',
+                    title=f'Composição dos Gastos em {last_month_str}'
+                )
+                st.plotly_chart(fig_pie, use_container_width=True)
+            else:
+                st.info(f"Não foram encontrados dados de gastos para o mês {last_month_str}.")
 
     elif page == "TaxbaseAI":
         st.markdown(

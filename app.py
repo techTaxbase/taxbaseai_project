@@ -49,35 +49,67 @@ engine = create_engine("sqlite:///usuarios.db")
 
 def load_users_from_db() -> dict:
     try:
-        df = pd.read_sql("SELECT username, name, password, empresa, role FROM usuarios", engine)
+        # Carrega os usuários básicos
+        df_users = pd.read_sql("SELECT username, name, password, role FROM usuarios", engine)
+        # Carrega os acessos das empresas
+        df_access = pd.read_sql("SELECT username, company_name FROM acesso_empresas", engine)
     except Exception as e:
-        st.error(f"Erro ao ler usuários do banco: {e}")
+        st.error(f"Erro ao ler usuários ou acessos do banco: {e}")
         return {}
+        
     users = {}
-    for _, row in df.iterrows():
+    for _, row in df_users.iterrows():
+        # Filtra as empresas para o usuário atual
+        user_companies = df_access[df_access["username"] == row["username"]]["company_name"].tolist()
+        
         users[row["username"]] = {
             "name": row["name"],
-            "password": row["password"],  # hash bcrypt armazenado no BD
-            "empresa": row["empresa"],
+            "password": row["password"],
             "role": row["role"],
+            "empresas": user_companies, # Agora é uma lista de empresas
         }
     return users
 
-def add_user_to_db(username: str, name: str, password: str, empresa: str, role: str):
-    """Adiciona um novo usuário ao banco de dados com senha hasheada."""
-    hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-    new_user = pd.DataFrame([{
-        "username": username,
-        "name": name,
-        "password": hashed_password,
-        "empresa": empresa,
-        "role": role
-    }])
+def add_user_to_db(username: str, name: str, password: str, empresas: list[str], role: str):
+    """
+    Adiciona um novo usuário ou atualiza as permissões de empresa de um usuário existente.
+    """
     try:
-        new_user.to_sql("usuarios", engine, if_exists="append", index=False)
+        # Verifica se o usuário já existe
+        existing_users_df = pd.read_sql("SELECT username FROM usuarios", engine)
+        user_exists = username in existing_users_df['username'].values
+
+        if not user_exists:
+            # Se o usuário não existe, cria um novo com a senha fornecida
+            if not password: # Garante que uma senha foi digitada para novos usuários
+                st.error("É necessário fornecer uma senha para criar um novo usuário.")
+                return False
+            hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+            new_user = pd.DataFrame([{"username": username, "name": name, "password": hashed_password, "role": role}])
+            new_user.to_sql("usuarios", engine, if_exists="append", index=False)
+            st.info(f"Novo usuário '{name}' criado com sucesso.")
+        else:
+            # Se o usuário já existe, apenas informa que as permissões serão atualizadas
+            st.info(f"Usuário '{name}' já existe. Atualizando a lista de empresas permitidas.")
+
+        # --- Lógica de atualização de permissões ---
+        # 1. Apaga TODAS as permissões antigas para este usuário, para evitar duplicatas
+        with engine.connect() as connection:
+            from sqlalchemy import text
+            stmt = text("DELETE FROM acesso_empresas WHERE username = :user")
+            connection.execute(stmt, {"user": username})
+            connection.commit()
+
+        # 2. Adiciona as NOVAS permissões selecionadas no formulário
+        if empresas:
+            access_data = [{"username": username, "company_name": emp} for emp in empresas]
+            df_access = pd.DataFrame(access_data)
+            df_access.to_sql("acesso_empresas", engine, if_exists="append", index=False)
+        
         return True
+
     except Exception as e:
-        st.error(f"Erro ao adicionar usuário: {e}")
+        st.error(f"Ocorreu um erro ao salvar o usuário: {e}")
         return False
 
 def delete_user_from_db(username_to_delete: str) -> bool:
@@ -99,11 +131,14 @@ def delete_user_from_db(username_to_delete: str) -> bool:
         return False
 
 def get_all_users() -> pd.DataFrame:
-    """Carrega todos os usuários para exibição."""
+    """Carrega todos os usuários para exibição (sem a antiga coluna 'empresa')."""
     try:
-        return pd.read_sql("SELECT username, name, empresa, role FROM usuarios", engine)
-    except:
-        return pd.DataFrame() # Retorna DF vazio se a tabela não existir
+        # CORREÇÃO: Seleciona apenas as colunas que ainda existem
+        return pd.read_sql("SELECT username, name, role FROM usuarios", engine)
+    except Exception as e:
+        # Melhoria: Mostra o erro se algo der errado no futuro
+        st.error(f"Erro ao carregar a lista de usuários: {e}")
+        return pd.DataFrame()
 
 def build_credentials(users: dict) -> dict:
     return {
@@ -671,7 +706,6 @@ if authentication_status:
 
     user_info = USERS[username]
     role      = user_info["role"]
-    empresa   = user_info["empresa"]
 
     with st.sidebar:
         st.image("assets/taxbaseAI_logo.png", width=250)
@@ -681,12 +715,24 @@ if authentication_status:
     st.sidebar.success(f"Conectado como {user_info['name']} ({role})")
 
     available_companies = load_companies_from_db()
-    if role == "admin":
-        session_companies = st.sidebar.multiselect(
-            "Selecione empresas", available_companies, default=available_companies
-        )
+    user_info = USERS[username]
+    accessible_companies = user_info["empresas"]
+
+    # O admin vê todas as empresas cadastradas como opções, o usuário normal vê apenas as suas
+    options_for_multiselect = load_companies_from_db() if user_info["role"] == "admin" else accessible_companies
+
+    # Garante que as empresas acessíveis sejam válidas
+    valid_accessible_companies = [c for c in accessible_companies if c in options_for_multiselect]
+
+    if not options_for_multiselect:
+        st.sidebar.warning("Nenhuma empresa disponível para seleção.")
+        session_companies = []
     else:
-        session_companies = [empresa] if empresa else []
+        session_companies = st.sidebar.multiselect(
+            "Selecione empresas para a sessão", 
+            options=options_for_multiselect, 
+            default=valid_accessible_companies
+        )
 
     # Filtrar apenas empresas válidas
     session_companies = [c for c in session_companies if c in available_companies]
@@ -771,14 +817,18 @@ if authentication_status:
                 # Assumindo que a lista de empresas virá de um BD ou está definida
                 # (Vamos implementar isso na seção 3)
                 available_companies = load_companies_from_db() # Placeholder
-                assigned_company = st.selectbox("Empresa de Acesso", options=available_companies)
+                assigned_companies = st.multiselect(
+                    "Empresas de Acesso", 
+                    options=load_companies_from_db(), # Carrega a lista de empresas cadastradas
+                    placeholder="Selecione uma ou mais empresas"
+                )
                 assigned_role = st.selectbox("Role", options=["user", "admin"])
         
                 submitted = st.form_submit_button("Criar Usuário")
 
                 if submitted:
                     if new_email and new_name and new_password:
-                        if add_user_to_db(username=new_email, name=new_name, password=new_password, empresa=assigned_company, role=assigned_role):
+                        if add_user_to_db(username=new_email, name=new_name, password=new_password, empresas=assigned_companies, role=assigned_role):
                             st.success(f"Usuário '{new_name}' criado com sucesso!")
 
                             send_invitation_email_sendgrid(recipient_email=new_email, temp_password=new_password)

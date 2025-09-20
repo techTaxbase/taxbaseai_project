@@ -1268,12 +1268,12 @@ if authentication_status:
             dre_raw = load_monthly_csv_from_dropbox(
                 prefix_month=f"DRE_{date_str}",
                 company_id=company_for_metrics,
-                expected_cols=["nome_empresa", "descrição", "valor"]
+                expected_cols=["company", "account", "amount"]
             )
             bal_raw = load_monthly_csv_from_dropbox(
                 prefix_month=f"BALANCO_{date_str}",
                 company_id=company_for_metrics,
-                expected_cols=["nome_empresa", "descrição", "saldo_atual"]
+                expected_cols=["company", "account", "amount"]
             )
             if dre_raw is None or bal_raw is None:
                 st.error("Não foi possível carregar os dados brutos.")

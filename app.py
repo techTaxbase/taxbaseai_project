@@ -49,9 +49,9 @@ engine = create_engine("sqlite:///usuarios.db")
 
 def load_users_from_db() -> dict:
     try:
-        # Carrega os usuários básicos
+        # Carrega os usuários básicos (sem a coluna 'empresa')
         df_users = pd.read_sql("SELECT username, name, password, role FROM usuarios", engine)
-        # Carrega os acessos das empresas
+        # Carrega os acessos da nova tabela 'acesso_empresas'
         df_access = pd.read_sql("SELECT username, company_name FROM acesso_empresas", engine)
     except Exception as e:
         st.error(f"Erro ao ler usuários ou acessos do banco: {e}")
@@ -66,7 +66,7 @@ def load_users_from_db() -> dict:
             "name": row["name"],
             "password": row["password"],
             "role": row["role"],
-            "empresas": user_companies, # Agora é uma lista de empresas
+            "empresas": user_companies, # A nova chave 'empresas' contém a lista
         }
     return users
 

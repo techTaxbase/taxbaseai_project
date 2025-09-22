@@ -15,6 +15,7 @@ import faiss
 import pickle
 import time
 from sqlalchemy import create_engine
+from sqlalchemy import text
 from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail
 import git
@@ -71,36 +72,25 @@ def load_users_from_db() -> dict:
     return users
 
 def add_user_to_db(username: str, name: str, password: str, empresas: list[str], role: str):
-    """
-    Adiciona um novo usuário ou atualiza as permissões de empresa de um usuário existente.
-    """
+    """Adiciona um novo usuário ao banco de dados, falhando se o usuário já existir."""
     try:
         # Verifica se o usuário já existe
-        existing_users_df = pd.read_sql("SELECT username FROM usuarios", engine)
-        user_exists = username in existing_users_df['username'].values
+        existing_users_df = pd.read_sql("SELECT username FROM usuarios WHERE username = ?", engine, params=(username,))
+        if not existing_users_df.empty:
+            st.error(f"Erro: O usuário '{username}' já existe. Use a área de edição para modificá-lo.")
+            return False
+            
+        # Garante que uma senha foi digitada para novos usuários
+        if not password:
+            st.error("É necessário fornecer uma senha para criar um novo usuário.")
+            return False
+        
+        # Cria o novo usuário
+        hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        new_user = pd.DataFrame([{"username": username, "name": name, "password": hashed_password, "role": role}])
+        new_user.to_sql("usuarios", engine, if_exists="append", index=False)
 
-        if not user_exists:
-            # Se o usuário não existe, cria um novo com a senha fornecida
-            if not password: # Garante que uma senha foi digitada para novos usuários
-                st.error("É necessário fornecer uma senha para criar um novo usuário.")
-                return False
-            hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-            new_user = pd.DataFrame([{"username": username, "name": name, "password": hashed_password, "role": role}])
-            new_user.to_sql("usuarios", engine, if_exists="append", index=False)
-            st.info(f"Novo usuário '{name}' criado com sucesso.")
-        else:
-            # Se o usuário já existe, apenas informa que as permissões serão atualizadas
-            st.info(f"Usuário '{name}' já existe. Atualizando a lista de empresas permitidas.")
-
-        # --- Lógica de atualização de permissões ---
-        # 1. Apaga TODAS as permissões antigas para este usuário, para evitar duplicatas
-        with engine.connect() as connection:
-            from sqlalchemy import text
-            stmt = text("DELETE FROM acesso_empresas WHERE username = :user")
-            connection.execute(stmt, {"user": username})
-            connection.commit()
-
-        # 2. Adiciona as NOVAS permissões selecionadas no formulário
+        # Adiciona as permissões na tabela de acesso
         if empresas:
             access_data = [{"username": username, "company_name": emp} for emp in empresas]
             df_access = pd.DataFrame(access_data)
@@ -109,7 +99,33 @@ def add_user_to_db(username: str, name: str, password: str, empresas: list[str],
         return True
 
     except Exception as e:
-        st.error(f"Ocorreu um erro ao salvar o usuário: {e}")
+        st.error(f"Ocorreu um erro ao criar o usuário: {e}")
+        return False
+    
+def update_user_in_db(username: str, new_name: str, new_empresas: list[str], new_role: str):
+    """Atualiza os dados de um usuário existente e suas permissões de empresa."""
+    try:
+        with engine.connect() as connection:
+            # 1. Atualiza o nome e o perfil na tabela 'usuarios'
+            stmt_user = text("UPDATE usuarios SET name = :name, role = :role WHERE username = :username")
+            connection.execute(stmt_user, {"name": new_name, "role": new_role, "username": username})
+
+            # 2. Apaga TODAS as permissões de empresa antigas deste usuário
+            stmt_delete = text("DELETE FROM acesso_empresas WHERE username = :username")
+            connection.execute(stmt_delete, {"username": username})
+
+            # 3. Insere as NOVAS permissões de empresa
+            if new_empresas:
+                # Prepara os dados para inserção em lote
+                access_data = [{"username": username, "company_name": emp} for emp in new_empresas]
+                stmt_insert = text("INSERT INTO acesso_empresas (username, company_name) VALUES (:username, :company_name)")
+                connection.execute(stmt_insert, access_data)
+            
+            # Confirma todas as transações
+            connection.commit()
+        return True
+    except Exception as e:
+        st.error(f"Ocorreu um erro ao atualizar o usuário: {e}")
         return False
 
 def delete_user_from_db(username_to_delete: str) -> bool:
@@ -808,35 +824,75 @@ if authentication_status:
         admin_tab1, admin_tab2, admin_tab3 = st.tabs(["Gerenciar Usuários", "Gerenciar Empresas", "📤 Upload de Relatórios"])
 
         with admin_tab1:
+            # --- ÁREA 1: CRIAR NOVO USUÁRIO ---
             st.subheader("➕ Criar Novo Usuário")
             with st.form("new_user_form", clear_on_submit=True):
-                new_email = st.text_input("E-mail do Usuário (para login)")
-                new_username = st.text_input("Usuário (para login)")
+                st.write("Preencha os dados para cadastrar um novo usuário no sistema.")
+                new_username = st.text_input("Usuário (E-mail para login)")
                 new_name = st.text_input("Nome Completo")
                 new_password = st.text_input("Senha Provisória", type="password")
-                # Assumindo que a lista de empresas virá de um BD ou está definida
-                # (Vamos implementar isso na seção 3)
-                available_companies = load_companies_from_db() # Placeholder
+        
+                all_companies = load_companies_from_db()
                 assigned_companies = st.multiselect(
-                    "Empresas de Acesso", 
-                    options=load_companies_from_db(), # Carrega a lista de empresas cadastradas
+                    "Selecione as Empresas de Acesso", 
+                    options=all_companies,
                     placeholder="Selecione uma ou mais empresas"
                 )
-                assigned_role = st.selectbox("Role", options=["user", "admin"])
+                assigned_role = st.selectbox("Perfil de Acesso (Role)", options=["user", "admin"])
         
-                submitted = st.form_submit_button("Criar Usuário")
-
-                if submitted:
-                    if new_email and new_name and new_password:
-                        if add_user_to_db(username=new_email, name=new_name, password=new_password, empresas=assigned_companies, role=assigned_role):
+                submitted_create = st.form_submit_button("Criar Usuário")
+                if submitted_create:
+                    if new_username and new_name:
+                        if add_user_to_db(new_username, new_name, new_password, assigned_companies, assigned_role):
                             st.success(f"Usuário '{new_name}' criado com sucesso!")
-
-                            send_invitation_email_sendgrid(recipient_email=new_email, temp_password=new_password)
-                            git_auto_commit(commit_message=f"feat: Adiciona novo usuário '{new_name}'")
-                        else:
-                            st.error("Não foi possível criar o usuário.")
+                            # A chamada para enviar e-mail continua funcionando aqui
+                            send_invitation_email_sendgrid(new_username, new_password)
                     else:
-                        st.warning("Por favor, preencha todos os campos.")
+                        st.warning("Usuário e Nome Completo são campos obrigatórios.")
+
+            st.divider()
+
+            # --- ÁREA 2: EDITAR USUÁRIO EXISTENTE ---
+            st.subheader("✏️ Editar Usuário Existente")
+    
+            # Carrega todos os usuários para o seletor
+            users_df = get_all_users()
+            if not users_df.empty:
+                user_to_edit = st.selectbox(
+                    "Selecione um usuário para editar", 
+                    options=users_df['username'], 
+                    index=None,
+                    placeholder="Escolha um usuário..."
+                )
+
+                if user_to_edit:
+                    # Carrega os dados completos do usuário selecionado
+                    user_data = USERS.get(user_to_edit)
+            
+                    with st.form("edit_user_form"):
+                        st.write(f"Editando dados de **{user_data.get('name')}** (`{user_to_edit}`)")
+                
+                        edit_name = st.text_input("Nome Completo", value=user_data.get('name'))
+                        edit_role = st.selectbox("Perfil de Acesso (Role)", options=["user", "admin"], index=["user", "admin"].index(user_data.get('role', 'user')))
+                
+                        edit_companies = st.multiselect(
+                            "Empresas de Acesso", 
+                            options=all_companies,
+                            default=user_data.get('empresas', [])
+                        )
+                
+                        st.warning("Para redefinir a senha, use a funcionalidade específica (a ser criada).")
+
+                        submitted_edit = st.form_submit_button("Atualizar Usuário")
+                        if submitted_edit:
+                            if update_user_in_db(user_to_edit, edit_name, edit_companies, edit_role):
+                                st.success(f"Usuário '{edit_name}' atualizado com sucesso!")
+                                st.info("Recarregando em 3 segundos para refletir as mudanças...")
+                                time.sleep(3)
+                                st.rerun()
+                    # A função update_user_in_db já mostra a mensagem de erro internamente
+            else:
+                st.info("Nenhum usuário cadastrado para editar.")
 
             st.divider()
             st.subheader("👥 Usuários Existentes")

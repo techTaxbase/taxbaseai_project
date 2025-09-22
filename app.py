@@ -845,6 +845,7 @@ if authentication_status:
                     if new_username and new_name:
                         if add_user_to_db(new_username, new_name, new_password, assigned_companies, assigned_role):
                             st.success(f"Usuário '{new_name}' criado com sucesso!")
+                            git_auto_commit(commit_message=f"feat(db): Adiciona novo usuário '{new_name}'")
                             # A chamada para enviar e-mail continua funcionando aqui
                             send_invitation_email_sendgrid(new_username, new_password)
                     else:
@@ -887,6 +888,7 @@ if authentication_status:
                         if submitted_edit:
                             if update_user_in_db(user_to_edit, edit_name, edit_companies, edit_role):
                                 st.success(f"Usuário '{edit_name}' atualizado com sucesso!")
+                                git_auto_commit(commit_message=f"chore(db): Atualiza dados do usuário '{edit_name}'")
                                 st.info("Recarregando em 3 segundos para refletir as mudanças...")
                                 time.sleep(3)
                                 st.rerun()

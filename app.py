@@ -1441,7 +1441,6 @@ if authentication_status:
             st.session_state["suggestions"] = suggestions or []
 
             upsert_embedding(prompt, resposta, index, meta)
-            st.rerun()
         
         if st.session_state.get("suggestions"):
             st.markdown("**Sugestões para continuar:**")

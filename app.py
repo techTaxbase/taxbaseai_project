@@ -1239,7 +1239,7 @@ if authentication_status:
             st.altair_chart(chart_gastos, use_container_width=True)
 
             # --- Gráfico 3: Proporcionalidade de Despesas e Custos ---
-            st.subheader("🍕 Proporcionalidade de Despesas e Custos")
+            st.subheader("📊 Proporcionalidade de Despesas e Custos")
             st.markdown(f"Análise para o último mês do período selecionado: **{end_period.strftime('%m/%Y')}**")
 
             # Filtra os gastos apenas do último mês

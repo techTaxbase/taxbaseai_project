@@ -1396,7 +1396,7 @@ if authentication_status:
         Histórico Resumido:
         {brief_ctx}
 
-        Aqui estão os dados brutos da Demonstração de Resultados (DRE):
+        Aqui esta os dados brutos da Demonstração de Resultados (DRE):
         {dre_csv}
 
         E aqui os dados brutos do Balanço Patrimonial:

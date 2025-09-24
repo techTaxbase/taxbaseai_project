@@ -6,6 +6,7 @@ __pycache__/
 # Streamlit Secrets
 .streamlit/secrets.toml
 admin.py
+teste.py
 
 # DropBox e OpenAI keys
 *.env

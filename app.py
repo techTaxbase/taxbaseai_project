@@ -22,6 +22,7 @@ import git
 import os
 import io
 import xlrd
+import re
 
 # -----------------------------------------------------------------------------
 # 0. Settings & Secrets
@@ -50,28 +51,29 @@ engine = create_engine("sqlite:///usuarios.db")
 
 def load_users_from_db() -> dict:
     try:
-        # Carrega os usuários básicos (sem a coluna 'empresa')
         df_users = pd.read_sql("SELECT username, name, password, role FROM usuarios", engine)
-        # Carrega os acessos da nova tabela 'acesso_empresas'
-        df_access = pd.read_sql("SELECT username, company_name FROM acesso_empresas", engine)
+        df_access = pd.read_sql("SELECT username, company_name, is_default FROM acesso_empresas", engine)
     except Exception as e:
         st.error(f"Erro ao ler usuários ou acessos do banco: {e}")
         return {}
         
     users = {}
     for _, row in df_users.iterrows():
-        # Filtra as empresas para o usuário atual
-        user_companies = df_access[df_access["username"] == row["username"]]["company_name"].tolist()
+        user_access_df = df_access[df_access["username"] == row["username"]]
+        user_companies = user_access_df["company_name"].tolist()
+        
+        # Encontra a empresa padrão (onde is_default == 1)
+        default_company_series = user_access_df[user_access_df["is_default"] == 1]["company_name"]
+        default_company = default_company_series.iloc[0] if not default_company_series.empty else None
         
         users[row["username"]] = {
-            "name": row["name"],
-            "password": row["password"],
-            "role": row["role"],
-            "empresas": user_companies, # A nova chave 'empresas' contém a lista
+            "name": row["name"], "password": row["password"], "role": row["role"],
+            "empresas": user_companies,
+            "default_company": default_company # Nova chave com a empresa padrão
         }
     return users
 
-def add_user_to_db(username: str, name: str, password: str, empresas: list[str], role: str):
+def add_user_to_db(username: str, name: str, password: str, empresas: list[str], role: str, default_company: str | None):
     """Adiciona um novo usuário ao banco de dados, falhando se o usuário já existir."""
     try:
         # Verifica se o usuário já existe
@@ -92,7 +94,7 @@ def add_user_to_db(username: str, name: str, password: str, empresas: list[str],
 
         # Adiciona as permissões na tabela de acesso
         if empresas:
-            access_data = [{"username": username, "company_name": emp} for emp in empresas]
+            access_data = [{"username": username, "company_name": emp, "is_default": 1 if emp == default_company else 0} for emp in empresas]
             df_access = pd.DataFrame(access_data)
             df_access.to_sql("acesso_empresas", engine, if_exists="append", index=False)
         
@@ -102,7 +104,7 @@ def add_user_to_db(username: str, name: str, password: str, empresas: list[str],
         st.error(f"Ocorreu um erro ao criar o usuário: {e}")
         return False
     
-def update_user_in_db(username: str, new_name: str, new_empresas: list[str], new_role: str):
+def update_user_in_db(username: str, new_name: str, new_empresas: list[str], new_role: str, default_company: str | None):
     """Atualiza os dados de um usuário existente e suas permissões de empresa."""
     try:
         with engine.connect() as connection:
@@ -117,8 +119,8 @@ def update_user_in_db(username: str, new_name: str, new_empresas: list[str], new
             # 3. Insere as NOVAS permissões de empresa
             if new_empresas:
                 # Prepara os dados para inserção em lote
-                access_data = [{"username": username, "company_name": emp} for emp in new_empresas]
-                stmt_insert = text("INSERT INTO acesso_empresas (username, company_name) VALUES (:username, :company_name)")
+                access_data = [{"username": username, "company_name": emp, "is_default": 1 if emp == default_company else 0} for emp in new_empresas]
+                stmt_insert = text("INSERT INTO acesso_empresas (username, company_name, is_default) VALUES (:username, :company_name, :is_default)")
                 connection.execute(stmt_insert, access_data)
             
             # Confirma todas as transações
@@ -586,6 +588,51 @@ def load_and_clean(company_id: str, date_str: str) -> tuple[pd.DataFrame, pd.Dat
 
     return dre, bal
 
+def check_file_exists_for_month(company_id: str, month_str: str) -> bool:
+    """Verifica se um arquivo DRE ou BALANCO existe para uma empresa e mês específicos."""
+    try:
+        entries = dbx.files_list_folder(BASE_PATH).entries
+        filenames = [e.name for e in entries]
+        
+        # Procura por DRE ou Balanço do mês e empresa especificados
+        dre_exists = f"DRE_{month_str}_{company_id}.csv" in filenames
+        balanco_exists = f"BALANCO_{month_str}_{company_id}.csv" in filenames
+        
+        return dre_exists or balanco_exists # Retorna True se qualquer um dos dois existir
+        
+    except dropbox.exceptions.ApiError:
+        return False
+
+def find_latest_available_month(company_id: str) -> str | None:
+    """
+    Verifica o Dropbox e retorna o último mês (formato 'YYYY-MM')
+    que possui um arquivo DRE ou BALANCO para a empresa especificada.
+    """
+    try:
+        entries = dbx.files_list_folder(BASE_PATH).entries
+    except dropbox.exceptions.ApiError:
+        return None
+
+    # --- LINHA ALTERADA PARA FILTRAR APENAS DRE E BALANCO ---
+    suffix = f"_{company_id}.csv"
+    user_files = [
+        e.name for e in entries 
+        if e.name.endswith(suffix) and (e.name.startswith("DRE_") or e.name.startswith("BALANCO_"))
+    ]
+    
+    # Usa expressão regular para encontrar o padrão de data 'AAAA-MM' no nome do arquivo
+    date_pattern = re.compile(r"_(\d{4}-\d{2})_")
+    dates = []
+    
+    for filename in user_files:
+        match = date_pattern.search(filename)
+        if match:
+            dates.append(match.group(1))
+            
+    if not dates:
+        return None
+
+    return max(dates)
 # -----------------------------------------------------------------------------
 # 3. Cálculo de Indicadores
 # -----------------------------------------------------------------------------
@@ -730,54 +777,91 @@ if authentication_status:
     authenticator.logout("Sair", "sidebar")
     st.sidebar.success(f"Conectado como {user_info['name']} ({role})")
 
-    available_companies = load_companies_from_db()
     user_info = USERS[username]
-    accessible_companies = user_info["empresas"]
+    role = user_info["role"]
 
-    # O admin vê todas as empresas cadastradas como opções, o usuário normal vê apenas as suas
-    options_for_multiselect = load_companies_from_db() if user_info["role"] == "admin" else accessible_companies
-
-    # Garante que as empresas acessíveis sejam válidas
-    valid_accessible_companies = [c for c in accessible_companies if c in options_for_multiselect]
-
-    if not options_for_multiselect:
-        st.sidebar.warning("Nenhuma empresa disponível para seleção.")
-        session_companies = []
+    if role == 'admin':
+        # Se for admin, ele pode ver TODAS as empresas cadastradas no sistema
+        accessible_companies = load_companies_from_db()
     else:
-        session_companies = st.sidebar.multiselect(
-            "Selecione empresas para a sessão", 
-            options=options_for_multiselect, 
-            default=valid_accessible_companies
-        )
+        # Se for um usuário normal, ele pode ver apenas as empresas associadas a ele
+        accessible_companies = user_info["empresas"]
 
-    # Filtrar apenas empresas válidas
-    session_companies = [c for c in session_companies if c in available_companies]
-    if not session_companies:
-        st.sidebar.error("Selecione ao menos uma empresa válida.")
+    if not accessible_companies:
+        st.sidebar.error("Seu usuário não tem acesso a nenhuma empresa.")
+        st.stop()
+    
+    # --- LÓGICA DE SELEÇÃO SIMPLIFICADA ---
+    # Encontra a empresa padrão do usuário, definida no cadastro
+    user_default_company = user_info.get("default_company")
+    default_index = 0
+    
+    # Tenta encontrar o índice da empresa padrão na lista de empresas que o usuário pode acessar
+    if user_default_company and user_default_company in accessible_companies:
+        default_index = accessible_companies.index(user_default_company)
 
-    st.sidebar.markdown("##### Período de Análise")
-    # --- Lógica para os valores padrão ---
+    # Cria o seletor único de empresa, já pré-selecionado com a padrão
+    company_for_metrics = st.sidebar.selectbox(
+        "Empresa", # Label simplificado para clareza
+        accessible_companies,
+        index=default_index
+    )
+
+    # A variável 'session_companies' agora conterá apenas a empresa única selecionada
+    # Isso garante que os dashboards também foquem nesta empresa
+    session_companies = [company_for_metrics] if company_for_metrics else []
+
+    ## --- Lógica Inteligente para o Período de Análise ---
+    if company_for_metrics:
+        default_company_for_period = company_for_metrics
+    elif accessible_companies:
+        default_company_for_period = accessible_companies[0]
+    else:
+        st.sidebar.warning("Nenhuma empresa disponível para definir o período.")
+        st.stop()
+    
     today = datetime.now().date()
-    default_start = today - relativedelta(months=5)
 
-    # Gera listas de anos e meses para os seletores
+    # 1. REGRA DO DIA 10: Define o mês alvo
+    if today.day < 10:
+        target_date = today - relativedelta(months=1)
+    else:
+        target_date = today
+
+    # 2. REGRA DO ÚLTIMO ARQUIVO: Verifica se o alvo tem dados, se não, busca o último
+    target_month_str = target_date.strftime("%Y-%m")
+
+    if check_file_exists_for_month(default_company_for_period, target_month_str):
+        default_end_date = target_date
+    else:
+        latest_month_str = find_latest_available_month(default_company_for_period)
+        if latest_month_str:
+            default_end_date = datetime.strptime(latest_month_str, "%Y-%m").date()
+        else:
+             default_end_date = target_date
+    
+    # O período inicial padrão é 5 meses antes do final
+    default_start_date = default_end_date
+
+    # --- Interface do Seletor (Usa os valores padrão que calculamos) ---
+    st.sidebar.markdown("##### Período de Análise")
     year_list = list(range(today.year + 1, today.year - 6, -1))
     month_list = list(range(1, 13))
 
     # --- Cria a interface com 4 seletores em colunas ---
     col1, col2 = st.sidebar.columns(2)
     with col1:
-        start_month = st.selectbox("Mês Inicial", month_list, index=month_list.index(default_start.month), format_func=lambda m: f"{m:02d}")
-        end_month = st.selectbox("Mês Final", month_list, index=month_list.index(today.month), format_func=lambda m: f"{m:02d}")
+        start_month = st.selectbox("Mês Inicial", month_list, index=month_list.index(default_start_date.month), format_func=lambda m: f"{m:02d}")
+        end_month = st.selectbox("Mês Final", month_list, index=month_list.index(default_end_date.month), format_func=lambda m: f"{m:02d}")
     with col2:
-        start_year = st.selectbox("Ano Inicial", year_list, index=year_list.index(default_start.year))
-        end_year = st.selectbox("Ano Final", year_list, index=year_list.index(today.year))
+        start_year = st.selectbox("Ano Inicial", year_list, index=year_list.index(default_start_date.year))
+        end_year = st.selectbox("Ano Final", year_list, index=year_list.index(default_end_date.year))
 
     # --- Monta as datas de início e fim com base na seleção ---
     try:
         start_period = datetime(start_year, start_month, 1).date()
-        last_day_of_month = calendar.monthrange(end_year, end_month)[1]
-        end_period = datetime(end_year, end_month, last_day_of_month).date()
+        _, last_day = calendar.monthrange(end_year, end_month)
+        end_period = datetime(end_year, end_month, last_day).date()
 
         if start_period > end_period:
             st.sidebar.error("A data inicial não pode ser posterior à data final.")
@@ -788,8 +872,6 @@ if authentication_status:
         st.stop()
 
     date_str = end_period.strftime("%Y-%m")
-
-    company_for_metrics = st.sidebar.selectbox("Empresa para Métricas", session_companies) if session_companies else None
 
     # Carregar dados com tratamento de erros
     all_dre, all_bal = [], []
@@ -806,7 +888,7 @@ if authentication_status:
     else:
         df_all = pd.DataFrame()
 
-    page = st.sidebar.radio("📊 Navegação", ["Visão Geral", "Contas a Pagar", "Dashboards", "TaxbaseAI"])
+    page = st.sidebar.radio("📊 Navegação", ["Visão Geral", "Dashboards", "TaxbaseAI"])
 
     if role == "admin":
         if st.sidebar.button("Painel do Administrador"):
@@ -838,12 +920,20 @@ if authentication_status:
                     options=all_companies,
                     placeholder="Selecione uma ou mais empresas"
                 )
+
+                default_company_create = st.selectbox(
+                    "Selecione a Empresa Padrão",
+                    options=assigned_companies, # As opções são as empresas já selecionadas
+                    index=0 if assigned_companies else None,
+                    help="Esta será a empresa pré-selecionada quando o usuário fizer login."
+                )
+
                 assigned_role = st.selectbox("Perfil de Acesso (Role)", options=["user", "admin"])
         
                 submitted_create = st.form_submit_button("Criar Usuário")
                 if submitted_create:
                     if new_username and new_name:
-                        if add_user_to_db(new_username, new_name, new_password, assigned_companies, assigned_role):
+                        if add_user_to_db(new_username, new_name, new_password, assigned_companies, assigned_role, default_company_create):
                             st.success(f"Usuário '{new_name}' criado com sucesso!")
                             git_auto_commit(commit_message=f"feat(db): Adiciona novo usuário '{new_name}'")
                             # A chamada para enviar e-mail continua funcionando aqui
@@ -881,12 +971,18 @@ if authentication_status:
                             options=all_companies,
                             default=user_data.get('empresas', [])
                         )
+
+                        default_company_edit = st.selectbox(
+                            "Selecione a Empresa Padrão",
+                            options=edit_companies, # As opções são as empresas selecionadas para edição
+                            index=edit_companies.index(user_data.get('default_company')) if user_data.get('default_company') in edit_companies else 0 if edit_companies else None,
+                            )
                 
                         st.warning("Para redefinir a senha, use a funcionalidade específica (a ser criada).")
 
                         submitted_edit = st.form_submit_button("Atualizar Usuário")
                         if submitted_edit:
-                            if update_user_in_db(user_to_edit, edit_name, edit_companies, edit_role):
+                            if update_user_in_db(user_to_edit, edit_name, edit_companies, edit_role, default_company_edit):
                                 st.success(f"Usuário '{edit_name}' atualizado com sucesso!")
                                 git_auto_commit(commit_message=f"chore(db): Atualiza dados do usuário '{edit_name}'")
                                 st.info("Recarregando em 3 segundos para refletir as mudanças...")
@@ -1090,71 +1186,6 @@ if authentication_status:
 
                 st.dataframe(rpt_disp, use_container_width=True)
 
-    elif active_page == "Contas a Pagar":
-        st.header("💸 Análise de Contas a Pagar")
-
-        # --- Lógica para carregar os dados (permanece a mesma) ---
-        all_ap_data = []
-        month_range = pd.date_range(start_period, end_period, freq='MS').strftime("%Y-%m").tolist()
-        for comp in session_companies:
-            for month_str in month_range:
-                df_ap_month = load_monthly_csv_from_dropbox(
-                    prefix_month=f"CONTASAPAGAR_{month_str}",
-                    company_id=comp,
-                    expected_cols=None # Lemos sem validar colunas aqui, a validação está no processamento
-                )
-                if df_ap_month is not None:
-                    all_ap_data.append(df_ap_month)
-
-        if not all_ap_data:
-            st.info("Nenhum dado de Contas a Pagar encontrado para o período selecionado.")
-        else:
-            df_ap = pd.concat(all_ap_data, ignore_index=True)
-            # Renomeia colunas para o padrão (usando o formato do seu último arquivo)
-            # Adicionando uma verificação para evitar erros se as colunas não existirem
-            if 'Valor' in df_ap.columns and 'Dt. Contabil' in df_ap.columns:
-                df_ap = df_ap.rename(columns={'Valor': 'saldo', 'Dt. Contabil': 'data_contabil', 'Razão Social': 'fornecedor'})
-                df_ap['data_contabil'] = pd.to_datetime(df_ap['data_contabil'], errors='coerce')
-            else: # Fallback para o primeiro formato de arquivo
-                df_ap = df_ap.rename(columns={'vencimento': 'data_contabil'})
-                df_ap['data_contabil'] = pd.to_datetime(df_ap['data_contabil'], errors='coerce')
-
-            # --- KPIs ---
-            total_pago_periodo = df_ap['saldo'].sum()
-            st.metric("Total Contabilizado no Período", f"R$ {total_pago_periodo:,.2f}")
-
-            # --- NOVO GRÁFICO: Histórico de Pagamentos por Mês ---
-            st.subheader("🗓️ Histórico de Pagamentos por Mês")
-        
-            # Cria uma coluna de 'mês' a partir da Data Contábil
-            df_ap['mes_contabil'] = df_ap['data_contabil'].dt.to_period('M').astype(str)
-            pagamentos_mes = df_ap.groupby('mes_contabil')['saldo'].sum().reset_index()
-
-            chart_pagamentos = alt.Chart(pagamentos_mes).mark_bar().encode(
-                x=alt.X('mes_contabil', title='Mês Contábil', sort=None),
-                y=alt.Y('saldo', title='Total Pago (R$)'),
-                tooltip=['mes_contabil', alt.Tooltip('saldo', format=',.2f')]
-            ).properties(height=400)
-            st.altair_chart(chart_pagamentos, use_container_width=True)
-
-            # --- Gráfico de Top Fornecedores (Mantido) ---
-            st.subheader("🏢 Top 10 Fornecedores")
-            if 'fornecedor' in df_ap.columns:
-                top_fornecedores = df_ap.groupby('fornecedor')['saldo'].sum().nlargest(10).reset_index()
-            
-                chart_top_forn = alt.Chart(top_fornecedores).mark_bar().encode(
-                    x=alt.X('saldo', title='Saldo Pago (R$)'),
-                    y=alt.Y('fornecedor', title='Fornecedor', sort='-x'),
-                    tooltip=['fornecedor', alt.Tooltip('saldo', format=',.2f')]
-                ).properties(height=500)
-                st.altair_chart(chart_top_forn, use_container_width=True)
-            else:
-                st.warning("Coluna 'fornecedor' não encontrada para gerar o gráfico de Top Fornecedores.")
-
-            # --- Tabela Detalhada (Mantida) ---
-            with st.expander("Ver todos os lançamentos do período"):
-                st.dataframe(df_ap)
-
     elif page == "Dashboards":
         st.header("📈 Dashboards de Análise de Resultados")
         if df_all.empty:
@@ -1323,45 +1354,61 @@ if authentication_status:
 
             brief_ctx = brief_history(st.session_state.messages)
 
+            expected_cols_std = ["company", "account", "amount"]
+            expected_cols_ap = ["company", "fornecedor", "vencimento", "saldo"]
+
             dre_raw = load_monthly_csv_from_dropbox(
-                prefix_month=f"DRE_{date_str}",
-                company_id=company_for_metrics,
-                expected_cols=["company", "account", "amount"]
+            prefix_month=f"DRE_{date_str}",
+            company_id=company_for_metrics,
+            expected_cols=expected_cols_std
             )
             bal_raw = load_monthly_csv_from_dropbox(
                 prefix_month=f"BALANCO_{date_str}",
                 company_id=company_for_metrics,
-                expected_cols=["company", "account", "amount"]
+                expected_cols=expected_cols_std
+            )
+            ap_raw = load_monthly_csv_from_dropbox(
+                prefix_month=f"CONTASAPAGAR_{date_str}",
+                company_id=company_for_metrics,
+                expected_cols=expected_cols_ap
             )
             if dre_raw is None or bal_raw is None:
-                st.error("Não foi possível carregar os dados brutos.")
+                st.error("Não foi possível carregar os dados essenciais (DRE/Balanço) para a IA.")
                 st.stop()
 
             dre_csv = dre_raw.to_csv(index=False)
             bal_csv = bal_raw.to_csv(index=False)
 
+            ap_context_str = ""
+            if ap_raw is not None:
+                ap_csv = ap_raw.to_csv(index=False)
+                ap_context_str = f"""
+                E aqui estão os dados de Contas a Pagar:
+                {ap_csv}
+                """
+
             full_prompt = f"""
-Você é um assistente contábil.
+        Você é um assistente contábil.
 
-Sistema (tom e contexto resumido):
-{TONE_SYSTEM}
+        Sistema (tom e contexto resumido):
+        {TONE_SYSTEM}
 
-Histórico Resumido:
-{brief_ctx}
+        Histórico Resumido:
+        {brief_ctx}
 
-Aqui estão os dados brutos da Demonstração de Resultados (DRE):
-{dre_csv}
+        Aqui estão os dados brutos da Demonstração de Resultados (DRE):
+        {dre_csv}
 
-E aqui os dados brutos do Balanço Patrimonial:
-{bal_csv}
+        E aqui os dados brutos do Balanço Patrimonial:
+        {bal_csv}
+        {ap_context_str}
+        Contextos anteriores (semânticos):
+        {ctx_txt}
 
-Contextos anteriores (semânticos):
-{ctx_txt}
+        Pergunta: {prompt}
 
-Pergunta: {prompt}
-
-Responda de forma objetiva e fundamentada nos dados brutos acima.
-"""
+        Responda de forma objetiva e fundamentada nos dados brutos acima.
+        """
 
             with st.chat_message("assistant", avatar="🤖"):
                 typing_placeholder = st.empty()
@@ -1394,6 +1441,7 @@ Responda de forma objetiva e fundamentada nos dados brutos acima.
             st.session_state["suggestions"] = suggestions or []
 
             upsert_embedding(prompt, resposta, index, meta)
+            st.rerun()
         
         if st.session_state.get("suggestions"):
             st.markdown("**Sugestões para continuar:**")

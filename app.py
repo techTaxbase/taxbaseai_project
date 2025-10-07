@@ -1401,43 +1401,52 @@ if authentication_status:
                     st.error("Não foi possível carregar os dados essenciais (DRE/Balanço) para a IA.")
                     st.stop()
 
-                # --- INÍCIO DA ATUALIZAÇÃO ---
                 # 2. CRIA OS RESUMOS MENSAIS
-                # Converte a data para formato de mês para agrupar
                 dre_raw['ref_date'] = pd.to_datetime(dre_raw['ref_date']).dt.strftime('%Y-%m')
                 bal_raw['ref_date'] = pd.to_datetime(bal_raw['ref_date']).dt.strftime('%Y-%m')
 
-                # Agrupa os dados por mês e conta, somando os valores
                 dre_summary = dre_raw.groupby(['ref_date', 'account'])['amount'].sum().reset_index()
                 bal_summary = bal_raw.groupby(['ref_date', 'account'])['amount'].sum().reset_index()
 
-                # 3. Converte os RESUMOS para CSV (eles serão muito menores)
-                dre_csv = dre_summary.to_csv(index=False)
-                bal_csv = bal_summary.to_csv(index=False)
-            
-                ap_context_str = ""
+                # --- INÍCIO DA CORREÇÃO ---
+                ap_summary = None # Garante que a variável exista
                 if ap_raw is not None and not ap_raw.empty:
-                    # Faz o mesmo para o Contas a Pagar
                     ap_raw['vencimento'] = pd.to_datetime(ap_raw['vencimento']).dt.strftime('%Y-%m')
                     ap_summary = ap_raw.groupby(['vencimento', 'fornecedor'])['saldo'].sum().reset_index()
-                    ap_csv = ap_summary.to_csv(index=False)
-                    ap_context_str = f"\n\nE aqui estão os dados de Contas a Pagar (resumidos por mês e fornecedor):\n{ap_csv}"
+                # --- FIM DA CORREÇÃO ---
+
+                # 3. Converte os RESUMOS para CSV e aplica o truncamento
+                MAX_CHARS_PER_CSV = 2500
             
-                # 4. Monta o prompt final, explicando que os dados são resumos
+                dre_csv = dre_summary.to_csv(index=False)
+                if len(dre_csv) > MAX_CHARS_PER_CSV:
+                    dre_csv = dre_csv[:MAX_CHARS_PER_CSV] + "\n\n... (resumo do DRE truncado)"
+
+                bal_csv = bal_summary.to_csv(index=False)
+                if len(bal_csv) > MAX_CHARS_PER_CSV:
+                    bal_csv = bal_csv[:MAX_CHARS_PER_CSV] + "\n\n... (resumo do Balanço truncado)"
+
+                ap_context_str = ""
+                if ap_summary is not None and not ap_summary.empty:
+                    ap_csv = ap_summary.to_csv(index=False)
+                    if len(ap_csv) > MAX_CHARS_PER_CSV:
+                        ap_csv = ap_csv[:MAX_CHARS_PER_CSV] + "\n\n... (resumo do Contas a Pagar truncado)"
+                    ap_context_str = f"\n\nE aqui estão os dados de Contas a Pagar (resumidos por mês e fornecedor):\n{ap_csv}"
+
+                # 4. Monta o prompt final (continua o mesmo)
                 full_prompt = f"""
                 Você é um assistente contábil. Os dados fornecidos foram pré-processados e estão resumidos por mês.
-
                 Período da Análise: de {start_period.strftime('%Y-%m')} a {end_period.strftime('%Y-%m')}.
-
+            
                 Aqui estão os dados da Demonstração de Resultados (DRE), com valores somados por conta e por mês (ref_date):
                 {dre_csv}
-
+            
                 E aqui os dados do Balanço Patrimonial, com valores somados por conta e por mês (ref_date):
                 {bal_csv}{ap_context_str}
             
                 Pergunta do usuário: {prompt}
-
-                Responda de forma objetiva, usando os dados resumidos fornecidos. Ao somar valores, considere todos os meses do período.
+            
+                Responda de forma objetiva, usando os dados resumidos fornecidos.
                 """
 
             with st.chat_message("assistant", avatar="🤖"):

@@ -1108,7 +1108,7 @@ if authentication_status:
 
                     # Decide qual função de processamento usar com base no tipo de relatório
                     if report_type in ["DRE", "BALANCO"]:
-                        cleaned_df = process_accounting_csv(uploaded_file, company_to_upload, report_type)
+                        cleaned_df = process_accounting_csv(uploaded_file, company_to_upload)
                     elif report_type == "CONTASAPAGAR":
                         cleaned_df = process_contas_a_pagar_csv(uploaded_file, company_to_upload)
 

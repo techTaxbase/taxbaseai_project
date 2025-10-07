@@ -419,7 +419,7 @@ def load_data_for_period(companies: list, start_date, end_date) -> pd.DataFrame:
         
     return pd.concat(all_data, ignore_index=True)
 
-def process_accounting_csv(uploaded_file, company_name: str, report_type: str) -> pd.DataFrame | None:
+def process_accounting_csv(uploaded_file, company_name: str) -> pd.DataFrame | None:
     """
     Processa arquivos contábeis (DRE ou Balancete) de diferentes formatos, 
     adaptando-se às colunas encontradas.

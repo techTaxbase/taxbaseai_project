@@ -1265,14 +1265,10 @@ if authentication_status:
 
             # --- Gráfico 3: Proporcionalidade de Despesas e Custos ---
             st.subheader("📊 Proporcionalidade de Despesas e Custos")
-            st.markdown(f"Análise para o último mês do período selecionado: **{end_period.strftime('%m/%Y')}**")
+            st.markdown(f"Análise para o período de **{start_period.strftime('%m/%Y')}** a **{end_period.strftime('%m/%Y')}**")
 
-            # Filtra os gastos apenas do último mês
-            last_month_str = pd.to_datetime(end_period).to_period('M').strftime('%Y-%m')
-            gastos_ultimo_mes = df_dre[df_dre['month'] == last_month_str]
-        
-            # Agrupa por conta para o gráfico de pizza
-            pizza_data = gastos_ultimo_mes.groupby('account')['gastos'].sum().reset_index()
+            # Agrupa por conta usando o DataFrame completo do período ('df_dre'), sem filtrar por mês
+            pizza_data = df_dre.groupby('account')['gastos'].sum().reset_index()
             pizza_data = pizza_data[pizza_data['gastos'] > 0] # Remove contas sem gastos
 
             if not pizza_data.empty:
@@ -1280,11 +1276,11 @@ if authentication_status:
                     pizza_data,
                     names='account',
                     values='gastos',
-                    title=f'Composição dos Gastos em {last_month_str}'
+                    title=f'Composição Consolidada dos Gastos no Período'
                 )
                 st.plotly_chart(fig_pie, use_container_width=True)
             else:
-                st.info(f"Não foram encontrados dados de gastos para o mês {last_month_str}.")
+                st.info(f"Não foram encontrados dados de gastos para o período selecionado.")
 
     elif page == "TaxbaseAI":
         st.markdown(

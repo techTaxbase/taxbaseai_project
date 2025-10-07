@@ -419,14 +419,16 @@ def load_data_for_period(companies: list, start_date, end_date) -> pd.DataFrame:
         
     return pd.concat(all_data, ignore_index=True)
 
-def process_accounting_csv(uploaded_file, company_name: str) -> pd.DataFrame | None:
+def process_accounting_csv(uploaded_file, company_name: str, report_type: str) -> pd.DataFrame | None:
     """
-    Processa arquivos contábeis de diferentes formatos, adaptando-se às colunas encontradas.
+    Processa arquivos contábeis (DRE ou Balancete) de diferentes formatos, 
+    adaptando-se às colunas encontradas.
     """
     try:
         file_name = uploaded_file.name
         df = None
 
+        # Lógica de leitura do arquivo (permanece a mesma)
         if file_name.endswith('.csv'):
             content = uploaded_file.getvalue().decode('latin-1')
             df = pd.read_csv(io.StringIO(content))
@@ -439,38 +441,38 @@ def process_accounting_csv(uploaded_file, company_name: str) -> pd.DataFrame | N
             st.error("Formato de arquivo não suportado.")
             return None
 
-        # --- LÓGICA "CAMALEÃO" PARA ENCONTRAR AS COLUNAS CORRETAS ---
+        # --- LÓGICA "CAMALEÃO" ATUALIZADA ---
         rename_map = None
 
-        # Procura pelo formato 1 (ex: Balancete)
+        # Procura pelo formato com 'saldoatu_cta'
         if "nome_cta" in df.columns and "saldoatu_cta" in df.columns:
             rename_map = {"nome_cta": "account", "saldoatu_cta": "amount"}
         
-        # Procura pelo formato 2 (ex: DRE)
+        # ADICIONADO: Procura pelo formato com 'saldoatu' (sem o _cta)
+        elif "nome_cta" in df.columns and "saldoatu" in df.columns:
+            rename_map = {"nome_cta": "account", "saldoatu": "amount"}
+
+        # Procura pelo formato com 'nomeconta'
         elif "nomeconta" in df.columns and "valor" in df.columns:
             rename_map = {"nomeconta": "account", "valor": "amount"}
-            
-        # Adicione outros formatos aqui no futuro, se necessário
-        # elif "OutraColunaConta" in df.columns and "OutraColunaValor" in df.columns:
-        #     rename_map = {"OutraColunaConta": "account", "OutraColunaValor": "amount"}
+        
+        # Procura pelo formato com 'Descrição' (para arquivos mais antigos)
+        elif "Descrição" in df.columns and "Valor" in df.columns:
+             rename_map = {"Descrição": "account", "Valor": "amount"}
 
         if rename_map is None:
             st.error(f"Não foi possível identificar as colunas de 'conta' e 'valor' neste arquivo. Colunas encontradas: {df.columns.tolist()}")
             return None
-        # ----------------------------------------------------------------
+        # ----------------------------------------------------
 
-        # O resto do código usa o 'rename_map' que foi escolhido acima
+        # O resto do código continua o mesmo...
         df = df.rename(columns=rename_map)
-        
         df = df.dropna(subset=['amount'])
         df['amount'] = pd.to_numeric(df['amount'], errors='coerce')
         df = df.dropna(subset=['amount'])
-        
         df['company'] = company_name
-
-        final_df = df[["company", "account", "amount"]]
         
-        return final_df
+        return df[["company", "account", "amount"]]
 
     except Exception as e:
         st.error(f"Ocorreu um erro ao processar o arquivo. Detalhe: {e}")

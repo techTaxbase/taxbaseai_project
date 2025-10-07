@@ -1114,7 +1114,7 @@ if authentication_status:
 
                     # A função retorna um DataFrame se tudo deu certo, ou None se deu erro
                     if cleaned_df is not None:
-                        date_str = end_period.strftime("%Y-%m") 
+                        date_str = f"{selected_year}-{selected_month:02d}"
                         new_filename = f"{report_type}_{date_str}_{company_to_upload}.csv"
                         full_dropbox_path = f"{BASE_PATH}/{new_filename}"
 

@@ -352,11 +352,12 @@ COMMON_COLUMNS = {
 def process_contas_a_pagar_csv(uploaded_file, company_name: str) -> pd.DataFrame | None:
     """Processa arquivos de Contas a Pagar de diferentes formatos."""
     try:
+        # Lógica de leitura (Excel ou CSV)
         df = pd.read_excel(uploaded_file, engine='openpyxl') if uploaded_file.name.endswith(('.xls', '.xlsx')) else pd.read_csv(uploaded_file)
         
         rename_map = None
         
-        # --- Lógica para identificar o formato do arquivo ---
+        # --- Lógica "Camaleão" para identificar o formato do arquivo ---
         
         # Formato 1 (o primeiro que você enviou)
         if all(col in df.columns for col in ['DATA DE VENCIMENTO', 'SALDO A PAGAR', 'NOME DO FORNECEDOR']):
@@ -367,15 +368,25 @@ def process_contas_a_pagar_csv(uploaded_file, company_name: str) -> pd.DataFrame
                 'EMPRESA': 'company'
             }
         
-        # Formato 2 (o novo arquivo)
+        # Formato 2 (o segundo que você enviou)
         elif all(col in df.columns for col in ['Dt. Contabil', 'Valor', 'Razão Social']):
-            st.warning("Aviso: O arquivo não contém 'Data de Vencimento'. Usando 'Dt. Contabil' como substituto. A análise de vencidos pode não estar correta.")
             rename_map = {
                 'Razão Social': 'fornecedor',
-                'Dt. Contabil': 'vencimento', # Usando como substituto
+                'Dt. Contabil': 'vencimento',
                 'Valor': 'saldo',
-                'Fantasia': 'company' # Assumindo que Fantasia pode ser a empresa
+                'Fantasia': 'company'
             }
+
+        # --- NOVO BLOCO ADICIONADO AQUI ---
+        # Formato 3 (o mais recente)
+        elif all(col in df.columns for col in ['Fornecedor', 'Pagamento', 'Valor pago']):
+            rename_map = {
+                'Fornecedor': 'fornecedor',
+                'Pagamento': 'vencimento', # Usando data de pagamento para a análise de histórico
+                'Valor pago': 'saldo'
+                # A coluna 'company' não parece estar neste arquivo, será adicionada depois
+            }
+        # --- FIM DO NOVO BLOCO ---
 
         if rename_map is None:
             st.error(f"Arquivo de Contas a Pagar inválido. Não foi possível identificar as colunas necessárias. Colunas encontradas: {df.columns.tolist()}")

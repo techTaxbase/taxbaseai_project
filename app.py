@@ -410,25 +410,38 @@ def process_contas_a_pagar_csv(uploaded_file, company_name: str) -> pd.DataFrame
         st.error(f"Ocorreu um erro ao processar o arquivo de Contas a Pagar. Detalhe: {e}")
         return None
 
-def load_data_for_period(companies: list, start_date, end_date) -> pd.DataFrame:
-    """Carrega e consolida os dados de DRE e Balanço para um período e várias empresas."""
-    all_data = []
+# (Substitua a sua função load_data_for_period por esta)
+def load_data_for_period(companies: list, start_date, end_date) -> dict:
+    """
+    Carrega e consolida os dados de DRE, Balanço e Contas a Pagar para um período,
+    retornando um dicionário com os DataFrames separados.
+    """
+    all_dre, all_bal, all_ap = [], [], []
     
-    # Gera uma lista de todos os meses no intervalo
     month_range = pd.date_range(start_date, end_date, freq='MS').strftime("%Y-%m").tolist()
 
     for comp in companies:
         for month_str in month_range:
+            # Carrega DRE e Balanço
             dre, bal = load_and_clean(comp, month_str)
-            if dre is not None:
-                all_data.append(dre)
-            if bal is not None:
-                all_data.append(bal)
+            if dre is not None: all_dre.append(dre)
+            if bal is not None: all_bal.append(bal)
 
-    if not all_data:
-        return pd.DataFrame() # Retorna um DataFrame vazio se nenhum dado for encontrado
-        
-    return pd.concat(all_data, ignore_index=True)
+            # Carrega Contas a Pagar
+            df_ap_month = load_monthly_csv_from_dropbox(
+                prefix_month=f"CONTASAPAGAR_{month_str}",
+                company_id=comp,
+                expected_cols=['company', 'fornecedor', 'vencimento', 'saldo']
+            )
+            if df_ap_month is not None:
+                all_ap.append(df_ap_month)
+
+    # Consolida cada tipo de dado em seu próprio DataFrame
+    return {
+        "dre": pd.concat(all_dre, ignore_index=True) if all_dre else pd.DataFrame(),
+        "bal": pd.concat(all_bal, ignore_index=True) if all_bal else pd.DataFrame(),
+        "ap": pd.concat(all_ap, ignore_index=True) if all_ap else pd.DataFrame()
+    }
 
 def process_accounting_csv(uploaded_file, company_name: str) -> pd.DataFrame | None:
     """
@@ -1213,11 +1226,14 @@ if authentication_status:
         '''
     elif page == "Dashboards":
         st.header("📈 Dashboards de Análise de Resultados")
-        if df_all.empty:
+
+        data_periodo = load_data_for_period(session_companies, start_period, end_period)
+        df_dre = data_periodo.get("dre", pd.DataFrame())
+
+        if df_dre.empty:
             st.info("Nenhum dado de DRE disponível para as seleções atuais.")
         else:
             # Filtra apenas os dados de DRE para estes gráficos
-            df_dre = df_all[df_all['statement'] == 'income_statement'].copy()
             df_dre['month'] = df_dre['ref_date'].dt.to_period('M').astype(str)
 
             df_dre['DESC'] = df_dre['account'].astype(str).str.strip().str.upper()
@@ -1375,73 +1391,51 @@ if authentication_status:
 
             brief_ctx = brief_history(st.session_state.messages)
 
-            expected_cols_std = ["company", "account", "amount"]
-            expected_cols_ap = ["company", "fornecedor", "vencimento", "saldo"]
+            with st.spinner("Analisando dados do período..."):
+                # 1. Carrega TODOS os dados do período usando a função central
+                data_periodo = load_data_for_period(session_companies, start_period, end_period)
+                dre_raw = data_periodo.get("dre")
+                bal_raw = data_periodo.get("bal")
+                ap_raw = data_periodo.get("ap") # Carrega também o Contas a Pagar
 
-            dre_raw = load_monthly_csv_from_dropbox(
-            prefix_month=f"DRE_{date_str}",
-            company_id=company_for_metrics,
-            expected_cols=expected_cols_std
-            )
-            bal_raw = load_monthly_csv_from_dropbox(
-                prefix_month=f"BALANCO_{date_str}",
-                company_id=company_for_metrics,
-                expected_cols=expected_cols_std
-            )
-            ap_raw = load_monthly_csv_from_dropbox(
-                prefix_month=f"CONTASAPAGAR_{date_str}",
-                company_id=company_for_metrics,
-                expected_cols=expected_cols_ap
-            )
-            if dre_raw is None or bal_raw is None:
-                st.error("Não foi possível carregar os dados essenciais (DRE/Balanço) para a IA.")
-                st.stop()
+                # 2. Verifica se os dados essenciais foram carregados
+                if dre_raw is None or dre_raw.empty or bal_raw is None or bal_raw.empty:
+                    st.error("Não foi possível carregar os dados essenciais (DRE/Balanço) para a IA.")
+                    st.stop()
 
-            MAX_CHARS_PER_CSV = 2500 # Define um limite de caracteres para cada CSV
-
-            # Converte para CSV e trunca se for muito grande
-            dre_csv = dre_raw.to_csv(index=False)
-            if len(dre_csv) > MAX_CHARS_PER_CSV:
-                dre_csv = dre_csv[:MAX_CHARS_PER_CSV] + "\n\n... (dados do DRE truncados para caber no contexto)"
-
-            bal_csv = bal_raw.to_csv(index=False)
-            if len(bal_csv) > MAX_CHARS_PER_CSV:
-                bal_csv = bal_csv[:MAX_CHARS_PER_CSV] + "\n\n... (dados do Balanço truncados para caber no contexto)"
-
-            # Adiciona o Contas a Pagar apenas se ele existir, e também o trunca
-            ap_context_str = ""
-            if ap_raw is not None:
-                ap_csv = ap_raw.to_csv(index=False)
-            if len(ap_csv) > MAX_CHARS_PER_CSV:
-                ap_csv = ap_csv[:MAX_CHARS_PER_CSV] + "\n\n... (dados do Contas a Pagar truncados)"
+                # 3. Converte para CSV e trunca se for muito grande
+                MAX_CHARS_PER_CSV = 2500
             
-            ap_context_str = f"""
-            E aqui estão os dados de Contas a Pagar:
-            {ap_csv}
-            """
+                dre_csv = dre_raw.to_csv(index=False)
+                if len(dre_csv) > MAX_CHARS_PER_CSV:
+                    dre_csv = dre_csv[:MAX_CHARS_PER_CSV] + "\n\n... (dados do DRE truncados)"
 
-            full_prompt = f"""
-        Você é um assistente contábil.
+                bal_csv = bal_raw.to_csv(index=False)
+                if len(bal_csv) > MAX_CHARS_PER_CSV:
+                    bal_csv = bal_csv[:MAX_CHARS_PER_CSV] + "\n\n... (dados do Balanço truncados)"
 
-        Sistema (tom e contexto resumido):
-        {TONE_SYSTEM}
+                # Adiciona o Contas a Pagar ao contexto se ele existir
+                ap_context_str = ""
+                if ap_raw is not None and not ap_raw.empty:
+                    ap_csv = ap_raw.to_csv(index=False)
+                    if len(ap_csv) > MAX_CHARS_PER_CSV:
+                        ap_csv = ap_csv[:MAX_CHARS_PER_CSV] + "\n\n... (dados do Contas a Pagar truncados)"
+                    ap_context_str = f"\n\nE aqui estão os dados de Contas a Pagar do período:\n{ap_csv}"
 
-        Histórico Resumido:
-        {brief_ctx}
+                # 4. Monta o prompt final informando o período
+                full_prompt = f"""
+                    Você é um assistente contábil. Os dados fornecidos (DRE, Balanço, Contas a Pagar) são para o período completo de {start_period.strftime('%Y-%m')} a {end_period.strftime('%Y-%m')}.
 
-        Aqui esta os dados brutos da Demonstração de Resultados (DRE):
-        {dre_csv}
+                    Aqui estão os dados da Demonstração de Resultados (DRE) do período:
+                    {dre_csv}
 
-        E aqui os dados brutos do Balanço Patrimonial:
-        {bal_csv}
-        {ap_context_str}
-        Contextos anteriores (semânticos):
-        {ctx_txt}
+                    E aqui os dados do Balanço Patrimonial do período:
+                    {bal_csv}{ap_context_str}
 
-        Pergunta: {prompt}
+                    Pergunta: {prompt}
 
-        Responda de forma objetiva e fundamentada nos dados brutos acima.
-        """
+                    Responda de forma objetiva e fundamentada nos dados fornecidos para o período.
+                    """
 
             with st.chat_message("assistant", avatar="🤖"):
                 typing_placeholder = st.empty()

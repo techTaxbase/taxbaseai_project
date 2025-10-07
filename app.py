@@ -532,21 +532,32 @@ def clean_data(df):
     return df.dropna(subset=["amount"]).query("amount != 0").drop_duplicates(subset=["account_std", "amount"])
 
 @st.cache_data
-def load_monthly_csv_from_dropbox(prefix_month: str, company_id: str, expected_cols: list[str]) -> pd.DataFrame | None:
+def load_monthly_csv_from_dropbox(prefix_month: str, company_id: str, expected_cols: list[str] | None) -> pd.DataFrame | None:
+    """
+    Carrega o arquivo mensal mais recente de uma empresa, usando regex para uma busca robusta.
+    """
     try:
         entries = dbx.files_list_folder(BASE_PATH).entries
+        all_filenames = [e.name for e in entries]
     except dropbox.exceptions.ApiError:
-        st.warning(f"Erro listando {BASE_PATH}")
+        st.warning(f"Erro ao listar arquivos do Dropbox em {BASE_PATH}")
         return None
+
+    # --- LÓGICA DE BUSCA ATUALIZADA COM REGEX ---
+    # Constrói um padrão de regex:
+    # Procura por um arquivo que COMEÇA com o prefixo do mês,
+    # tem QUALQUER COISA no meio, e TERMINA com o sufixo da empresa.
+    # re.IGNORECASE torna a busca insensível a maiúsculas/minúsculas.
+    pattern = re.compile(f"^{re.escape(prefix_month)}.*_{re.escape(company_id)}\\.csv$", re.IGNORECASE)
     
-    pattern_prefix = prefix_month
-    suffix = f"_{company_id}.csv"
-    candidates = [e.name for e in entries if e.name.startswith(pattern_prefix) and e.name.endswith(suffix)]
+    candidates = [name for name in all_filenames if pattern.search(name)]
+    # --- FIM DA ATUALIZAÇÃO ---
 
     if not candidates:
-        st.warning(f"Nenhum arquivo começando com '{pattern_prefix}' e terminando em '{suffix}'")
+        st.warning(f"Nenhum arquivo encontrado com o padrão: '{prefix_month}..._{company_id}.csv'")
         return None
     
+    # Se houver múltiplos candidatos, pega o último em ordem alfabética
     latest = sorted(candidates)[-1]
     return load_csv_from_dropbox(latest, expected_cols)
 

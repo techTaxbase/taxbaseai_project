@@ -912,7 +912,7 @@ if authentication_status:
     else:
         df_all = pd.DataFrame()
 
-    page = st.sidebar.radio("📊 Navegação", ["Visão Geral", "Dashboards", "TaxbaseAI"])
+    page = st.sidebar.radio("📊 Navegação", ["Dashboards", "TaxbaseAI"]) # Após ajustes adicionar o Visão Geral de volta
 
     if role == "admin":
         if st.sidebar.button("Painel do Administrador"):
@@ -1155,7 +1155,7 @@ if authentication_status:
                             st.balloons()
                         else:
                             st.error("Ocorreu um problema no envio para o Dropbox. Verifique as mensagens de erro.")
-
+        '''
     elif page == "Visão Geral":
 
         if not company_for_metrics:
@@ -1210,7 +1210,7 @@ if authentication_status:
                 rpt_disp["Valor"] = rpt_disp.apply(format_val, axis=1)
 
                 st.dataframe(rpt_disp, use_container_width=True)
-
+        '''
     elif page == "Dashboards":
         st.header("📈 Dashboards de Análise de Resultados")
         if df_all.empty:

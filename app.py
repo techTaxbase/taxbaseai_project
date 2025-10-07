@@ -1135,6 +1135,19 @@ if authentication_status:
                             st.error("Ocorreu um problema no envio para o Dropbox. Verifique as mensagens de erro.")
 
     elif page == "Visão Geral":
+
+        # --- INÍCIO DO CÓDIGO DE DEBUG ---
+        st.warning("🕵️‍♂️ Ferramenta de Debug: Listando arquivos do Dropbox...")
+        try:
+            entries = dbx.files_list_folder(BASE_PATH).entries
+            all_filenames = [e.name for e in entries]
+            st.write("Arquivos encontrados na sua pasta do Dropbox:")
+            st.write(all_filenames if all_filenames else "Nenhum arquivo encontrado.")
+        except Exception as e:
+            st.error(f"Erro ao listar arquivos do Dropbox: {e}")
+        st.divider()
+        # --- FIM DO CÓDIGO DE DEBUG ---
+
         if not company_for_metrics:
             st.error("Selecione uma empresa para visualizar a Visão Geral.")
         else:

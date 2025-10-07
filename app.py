@@ -504,8 +504,7 @@ def process_accounting_csv(uploaded_file, company_name: str) -> pd.DataFrame | N
 
 def upload_file_to_dropbox(file_bytes: bytes, dropbox_path: str) -> bool:
     """
-    Faz o upload de um conteúdo em bytes para um caminho específico no Dropbox,
-    sobrescrevendo se o arquivo já existir.
+    Faz o upload de um conteúdo em bytes para um caminho específico no Dropbox, sobrescrevendo se o arquivo já existir.
     """
     try:
         dbx.files_upload(

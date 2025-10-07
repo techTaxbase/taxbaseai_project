@@ -1401,16 +1401,28 @@ if authentication_status:
                 st.error("Não foi possível carregar os dados essenciais (DRE/Balanço) para a IA.")
                 st.stop()
 
-            dre_csv = dre_raw.to_csv(index=False)
-            bal_csv = bal_raw.to_csv(index=False)
+            MAX_CHARS_PER_CSV = 2500 # Define um limite de caracteres para cada CSV
 
+            # Converte para CSV e trunca se for muito grande
+            dre_csv = dre_raw.to_csv(index=False)
+            if len(dre_csv) > MAX_CHARS_PER_CSV:
+                dre_csv = dre_csv[:MAX_CHARS_PER_CSV] + "\n\n... (dados do DRE truncados para caber no contexto)"
+
+            bal_csv = bal_raw.to_csv(index=False)
+            if len(bal_csv) > MAX_CHARS_PER_CSV:
+                bal_csv = bal_csv[:MAX_CHARS_PER_CSV] + "\n\n... (dados do Balanço truncados para caber no contexto)"
+
+            # Adiciona o Contas a Pagar apenas se ele existir, e também o trunca
             ap_context_str = ""
             if ap_raw is not None:
                 ap_csv = ap_raw.to_csv(index=False)
-                ap_context_str = f"""
-                E aqui estão os dados de Contas a Pagar:
-                {ap_csv}
-                """
+            if len(ap_csv) > MAX_CHARS_PER_CSV:
+                ap_csv = ap_csv[:MAX_CHARS_PER_CSV] + "\n\n... (dados do Contas a Pagar truncados)"
+            
+            ap_context_str = f"""
+            E aqui estão os dados de Contas a Pagar:
+            {ap_csv}
+            """
 
             full_prompt = f"""
         Você é um assistente contábil.

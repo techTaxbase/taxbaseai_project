@@ -1446,7 +1446,7 @@ if authentication_status:
             
                 Pergunta do usuário: {prompt}
             
-                Responda de forma objetiva, usando os dados resumidos fornecidos, **estritamente no mesmo idioma da 'Pergunta do usuário'**.
+                **IMPORTANTE:** Sua resposta DEVE ser **exclusivamente** no mesmo idioma da 'Pergunta do usuário' acima. Use os dados resumidos fornecidos para responder de forma objetiva.
                 """
 
             with st.chat_message("assistant", avatar="🤖"):

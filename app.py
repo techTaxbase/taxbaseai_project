@@ -1446,7 +1446,7 @@ if authentication_status:
             
                 Pergunta do usuário: {prompt}
             
-                **IMPORTANTE:** Sua resposta DEVE ser **exclusivamente** no mesmo idioma da 'Pergunta do usuário' acima. Use os dados resumidos fornecidos para responder de forma objetiva.
+                Responda de forma objetiva, usando os dados resumidos fornecidos, PRECISO QUE EXCLUSIVAMENTE, INDEPENDENTE DO IDIOMA DOS DADOS NO CSV A RESPOSTA PRECISA ESTAR NO MESMO IDIOMA DA PERGUNTA, OU SEJA, SE A PERGUNTA ESTÁ EM INGLÊS A RESPOSTA PRECISA SER INGLÊS TAMBÉM E ASSIM SUCESSIVAMENTE.
                 """
 
             with st.chat_message("assistant", avatar="🤖"):

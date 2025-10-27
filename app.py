@@ -354,28 +354,38 @@ def process_contas_a_pagar_csv(uploaded_file, company_name: str) -> pd.DataFrame
     try:
         file_name = uploaded_file.name
         df = None
-
         # --- LÓGICA DE LEITURA CORRIGIDA ---
         if file_name.endswith('.csv'):
-            # Assume a codificação 'latin-1' que pode ser comum
             df = pd.read_csv(io.StringIO(uploaded_file.getvalue().decode('latin-1')))
         elif file_name.endswith('.xlsx'):
             df = pd.read_excel(uploaded_file, engine='openpyxl')
         elif file_name.endswith('.xls'):
             df = pd.read_excel(uploaded_file, engine='xlrd')
         # --- FIM DA CORREÇÃO ---
-
-        if df is None:
-            st.error("Formato de arquivo não suportado."); return None
+        if df is None: st.error("Formato de arquivo não suportado."); return None
 
         # --- Lógica "Camaleão" para identificar colunas ---
         rename_map = None
+        # Formato 1
         if all(col in df.columns for col in ['DATA DE VENCIMENTO', 'SALDO A PAGAR', 'NOME DO FORNECEDOR']):
             rename_map = {'NOME DO FORNECEDOR': 'fornecedor', 'DATA DE VENCIMENTO': 'vencimento', 'SALDO A PAGAR': 'saldo', 'EMPRESA': 'company'}
+        # Formato 2
         elif all(col in df.columns for col in ['Dt. Contabil', 'Valor', 'Razão Social']):
             rename_map = {'Razão Social': 'fornecedor', 'Dt. Contabil': 'vencimento', 'Valor': 'saldo', 'Fantasia': 'company'}
+        # Formato 3
         elif all(col in df.columns for col in ['Fornecedor', 'Pagamento', 'Valor pago']):
             rename_map = {'Fornecedor': 'fornecedor', 'Pagamento': 'vencimento', 'Valor pago': 'saldo'}
+
+        # --- BLOCO CORRIGIDO PARA O FORMATO 4 ---
+        # Agora verifica e usa a coluna 'historico' para fornecedor
+        elif all(col in df.columns for col in ['historico', 'datalan', 'valcre']):
+            st.warning("Aviso: Usando 'Data Lançamento' como data, 'Valor Crédito' como saldo e 'Histórico' como fornecedor.")
+            rename_map = {
+                'historico': 'fornecedor', # <-- CORRIGIDO
+                'datalan': 'vencimento',
+                'valcre': 'saldo'
+            }
+        # --- FIM DA CORREÇÃO ---
 
         if rename_map is None:
             st.error(f"Colunas necessárias não identificadas. Colunas encontradas: {df.columns.tolist()}"); return None
@@ -383,10 +393,11 @@ def process_contas_a_pagar_csv(uploaded_file, company_name: str) -> pd.DataFrame
         df_clean = df.rename(columns=rename_map)
         df_clean['vencimento'] = pd.to_datetime(df_clean['vencimento'], errors='coerce')
         df_clean['saldo'] = pd.to_numeric(df_clean['saldo'], errors='coerce')
-        if 'company' not in df_clean.columns:
-            df_clean['company'] = company_name
+
+        if 'company' not in df_clean.columns: df_clean['company'] = company_name
         df_clean = df_clean.dropna(subset=['vencimento', 'saldo', 'fornecedor'])
 
+        # Seleciona apenas as colunas padronizadas finais
         return df_clean[['company', 'fornecedor', 'vencimento', 'saldo']]
 
     except Exception as e:

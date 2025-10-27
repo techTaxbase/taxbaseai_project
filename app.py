@@ -350,58 +350,75 @@ COMMON_COLUMNS = {
 }
 
 def process_contas_a_pagar_csv(uploaded_file, company_name: str) -> pd.DataFrame | None:
-    """Processa arquivos de Contas a Pagar de diferentes formatos, usando o motor correto."""
+    """Processa arquivos de Contas a Pagar de diferentes formatos, com limpeza robusta."""
     try:
         file_name = uploaded_file.name
         df = None
-        # --- LÓGICA DE LEITURA CORRIGIDA ---
+        # --- Lógica de Leitura ---
         if file_name.endswith('.csv'):
             df = pd.read_csv(io.StringIO(uploaded_file.getvalue().decode('latin-1')))
         elif file_name.endswith('.xlsx'):
             df = pd.read_excel(uploaded_file, engine='openpyxl')
         elif file_name.endswith('.xls'):
             df = pd.read_excel(uploaded_file, engine='xlrd')
-        # --- FIM DA CORREÇÃO ---
         if df is None: st.error("Formato de arquivo não suportado."); return None
 
-        # --- Lógica "Camaleão" para identificar colunas ---
+        # --- Limpeza Imediata dos Nomes das Colunas ---
+        df.columns = df.columns.str.strip().str.lower() # Remove espaços e converte para minúsculas
+
+        # --- Lógica "Camaleão" com nomes em minúsculas ---
         rename_map = None
         # Formato 1
-        if all(col in df.columns for col in ['DATA DE VENCIMENTO', 'SALDO A PAGAR', 'NOME DO FORNECEDOR']):
-            rename_map = {'NOME DO FORNECEDOR': 'fornecedor', 'DATA DE VENCIMENTO': 'vencimento', 'SALDO A PAGAR': 'saldo', 'EMPRESA': 'company'}
+        if all(col in df.columns for col in ['data de vencimento', 'saldo a pagar', 'nome do fornecedor']):
+            rename_map = {'nome do fornecedor': 'fornecedor', 'data de vencimento': 'vencimento', 'saldo a pagar': 'saldo', 'empresa': 'company'}
         # Formato 2
-        elif all(col in df.columns for col in ['Dt. Contabil', 'Valor', 'Razão Social']):
-            rename_map = {'Razão Social': 'fornecedor', 'Dt. Contabil': 'vencimento', 'Valor': 'saldo', 'Fantasia': 'company'}
+        elif all(col in df.columns for col in ['dt. contabil', 'valor', 'razão social']):
+            rename_map = {'razão social': 'fornecedor', 'dt. contabil': 'vencimento', 'valor': 'saldo', 'fantasia': 'company'}
         # Formato 3
-        elif all(col in df.columns for col in ['Fornecedor', 'Pagamento', 'Valor pago']):
-            rename_map = {'Fornecedor': 'fornecedor', 'Pagamento': 'vencimento', 'Valor pago': 'saldo'}
-
-        # --- BLOCO CORRIGIDO PARA O FORMATO 4 ---
-        # Agora verifica e usa a coluna 'historico' para fornecedor
+        elif all(col in df.columns for col in ['fornecedor', 'pagamento', 'valor pago']):
+            rename_map = {'fornecedor': 'fornecedor', 'pagamento': 'vencimento', 'valor pago': 'saldo'}
+        # Formato 4
         elif all(col in df.columns for col in ['historico', 'datalan', 'valcre']):
-            st.warning("Aviso: Usando 'Data Lançamento' como data, 'Valor Crédito' como saldo e 'Histórico' como fornecedor.")
-            rename_map = {
-                'historico': 'fornecedor', # <-- CORRIGIDO
-                'datalan': 'vencimento',
-                'valcre': 'saldo'
-            }
-        # --- FIM DA CORREÇÃO ---
+            st.warning("Usando 'Data Lançamento', 'Valor Crédito', 'Histórico'.")
+            rename_map = {'historico': 'fornecedor', 'datalan': 'vencimento', 'valcre': 'saldo'}
 
         if rename_map is None:
             st.error(f"Colunas necessárias não identificadas. Colunas encontradas: {df.columns.tolist()}"); return None
 
         df_clean = df.rename(columns=rename_map)
-        df_clean['vencimento'] = pd.to_datetime(df_clean['vencimento'], errors='coerce')
-        df_clean['saldo'] = pd.to_numeric(df_clean['saldo'], errors='coerce')
 
-        if 'company' not in df_clean.columns: df_clean['company'] = company_name
+        # --- Conversão de Tipos e Limpeza Aprimoradas ---
+        # Garante que as colunas essenciais existam ANTES de tentar converter
+        required_final_cols = ['fornecedor', 'vencimento', 'saldo']
+        if not all(col in df_clean.columns for col in required_final_cols):
+             st.error(f"Erro interno após renomear. Colunas faltando: {set(required_final_cols) - set(df_clean.columns)}"); return None
+
+        # Converte para data, forçando erros a virarem NaT (Not a Time)
+        df_clean['vencimento'] = pd.to_datetime(df_clean['vencimento'], errors='coerce')
+        # Converte para numérico, forçando erros a virarem NaN
+        df_clean['saldo'] = pd.to_numeric(df_clean['saldo'], errors='coerce')
+        # Converte fornecedor para string para evitar problemas com dropna
+        df_clean['fornecedor'] = df_clean['fornecedor'].astype(str)
+
+        # Adiciona a coluna company se não existir
+        if 'company' not in df_clean.columns:
+             df_clean['company'] = company_name
+        elif 'company' in df_clean.columns: # Garante que a coluna company seja string
+             df_clean['company'] = df_clean['company'].astype(str)
+
+        # Remove linhas onde QUALQUER uma das colunas essenciais é inválida (NaN/NaT)
         df_clean = df_clean.dropna(subset=['vencimento', 'saldo', 'fornecedor'])
 
         # Seleciona apenas as colunas padronizadas finais
-        return df_clean[['company', 'fornecedor', 'vencimento', 'saldo']]
+        final_cols = ['company', 'fornecedor', 'vencimento', 'saldo']
+        # Garante que todas as colunas finais realmente existem antes de selecionar
+        df_clean = df_clean[[col for col in final_cols if col in df_clean.columns]]
+
+        return df_clean
 
     except Exception as e:
-        st.error(f"Ocorreu um erro ao processar o Contas a Pagar: {e}"); return None
+        # Mostra o erro específico que ocorreu durante o processamento
+        st.error(f"Ocorreu um erro detalhado ao processar o Contas a Pagar: {e}"); return None
 
 # (Substitua a sua função load_data_for_period por esta)
 def load_data_for_period(companies: list, start_date, end_date) -> dict:

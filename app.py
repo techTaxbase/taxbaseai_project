@@ -350,7 +350,7 @@ COMMON_COLUMNS = {
 }
 
 def process_contas_a_pagar_csv(uploaded_file, company_name: str) -> pd.DataFrame | None:
-    """Processa arquivos de Contas a Pagar de diferentes formatos, com limpeza robusta."""
+    """Processa arquivos de Contas a Pagar de diferentes formatos, com debug."""
     try:
         file_name = uploaded_file.name
         df = None
@@ -363,10 +363,9 @@ def process_contas_a_pagar_csv(uploaded_file, company_name: str) -> pd.DataFrame
             df = pd.read_excel(uploaded_file, engine='xlrd')
         if df is None: st.error("Formato de arquivo não suportado."); return None
 
-        # --- Limpeza Imediata dos Nomes das Colunas ---
-        df.columns = df.columns.str.strip().str.lower() # Remove espaços e converte para minúsculas
+        df.columns = df.columns.str.strip().str.lower()
 
-        # --- Lógica "Camaleão" com nomes em minúsculas ---
+        # --- Lógica "Camaleão" ---
         rename_map = None
         # Formato 1
         if all(col in df.columns for col in ['data de vencimento', 'saldo a pagar', 'nome do fornecedor']):
@@ -383,41 +382,38 @@ def process_contas_a_pagar_csv(uploaded_file, company_name: str) -> pd.DataFrame
             rename_map = {'historico': 'fornecedor', 'datalan': 'vencimento', 'valcre': 'saldo'}
 
         if rename_map is None:
-            st.error(f"Colunas necessárias não identificadas. Colunas encontradas: {df.columns.tolist()}"); return None
+            st.error(f"Colunas necessárias não identificadas. Colunas: {df.columns.tolist()}"); return None
 
         df_clean = df.rename(columns=rename_map)
 
-        # --- Conversão de Tipos e Limpeza Aprimoradas ---
-        # Garante que as colunas essenciais existam ANTES de tentar converter
+        # --- INÍCIO DO DEBUG ---
+        st.error("--- DEBUG PÓS-RENOMEAR ---")
+        st.write("Primeiras 5 linhas do DataFrame após renomear:")
+        st.dataframe(df_clean.head())
+        st.write("Colunas do DataFrame após renomear:")
+        st.write(df_clean.columns.tolist())
+        st.error("--- FIM DO DEBUG ---")
+        # --- FIM DO DEBUG ---
+
+        # --- Conversão de Tipos e Limpeza ---
         required_final_cols = ['fornecedor', 'vencimento', 'saldo']
         if not all(col in df_clean.columns for col in required_final_cols):
-             st.error(f"Erro interno após renomear. Colunas faltando: {set(required_final_cols) - set(df_clean.columns)}"); return None
+             st.error(f"Erro interno: Colunas faltando após renomear: {set(required_final_cols) - set(df_clean.columns)}"); return None
 
-        # Converte para data, forçando erros a virarem NaT (Not a Time)
         df_clean['vencimento'] = pd.to_datetime(df_clean['vencimento'], errors='coerce')
-        # Converte para numérico, forçando erros a virarem NaN
         df_clean['saldo'] = pd.to_numeric(df_clean['saldo'], errors='coerce')
-        # Converte fornecedor para string para evitar problemas com dropna
         df_clean['fornecedor'] = df_clean['fornecedor'].astype(str)
 
-        # Adiciona a coluna company se não existir
-        if 'company' not in df_clean.columns:
-             df_clean['company'] = company_name
-        elif 'company' in df_clean.columns: # Garante que a coluna company seja string
-             df_clean['company'] = df_clean['company'].astype(str)
+        if 'company' not in df_clean.columns: df_clean['company'] = company_name
+        elif 'company' in df_clean.columns: df_clean['company'] = df_clean['company'].astype(str)
 
-        # Remove linhas onde QUALQUER uma das colunas essenciais é inválida (NaN/NaT)
         df_clean = df_clean.dropna(subset=['vencimento', 'saldo', 'fornecedor'])
-
-        # Seleciona apenas as colunas padronizadas finais
         final_cols = ['company', 'fornecedor', 'vencimento', 'saldo']
-        # Garante que todas as colunas finais realmente existem antes de selecionar
         df_clean = df_clean[[col for col in final_cols if col in df_clean.columns]]
 
         return df_clean
 
     except Exception as e:
-        # Mostra o erro específico que ocorreu durante o processamento
         st.error(f"Ocorreu um erro detalhado ao processar o Contas a Pagar: {e}"); return None
 
 # (Substitua a sua função load_data_for_period por esta)

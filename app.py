@@ -350,65 +350,47 @@ COMMON_COLUMNS = {
 }
 
 def process_contas_a_pagar_csv(uploaded_file, company_name: str) -> pd.DataFrame | None:
-    """Processa arquivos de Contas a Pagar de diferentes formatos."""
+    """Processa arquivos de Contas a Pagar de diferentes formatos, usando o motor correto."""
     try:
-        # Lógica de leitura (Excel ou CSV)
-        df = pd.read_excel(uploaded_file, engine='openpyxl') if uploaded_file.name.endswith(('.xls', '.xlsx')) else pd.read_csv(uploaded_file)
-        
-        rename_map = None
-        
-        # --- Lógica "Camaleão" para identificar o formato do arquivo ---
-        
-        # Formato 1 (o primeiro que você enviou)
-        if all(col in df.columns for col in ['DATA DE VENCIMENTO', 'SALDO A PAGAR', 'NOME DO FORNECEDOR']):
-            rename_map = {
-                'NOME DO FORNECEDOR': 'fornecedor',
-                'DATA DE VENCIMENTO': 'vencimento',
-                'SALDO A PAGAR': 'saldo',
-                'EMPRESA': 'company'
-            }
-        
-        # Formato 2 (o segundo que você enviou)
-        elif all(col in df.columns for col in ['Dt. Contabil', 'Valor', 'Razão Social']):
-            rename_map = {
-                'Razão Social': 'fornecedor',
-                'Dt. Contabil': 'vencimento',
-                'Valor': 'saldo',
-                'Fantasia': 'company'
-            }
+        file_name = uploaded_file.name
+        df = None
 
-        # --- NOVO BLOCO ADICIONADO AQUI ---
-        # Formato 3 (o mais recente)
+        # --- LÓGICA DE LEITURA CORRIGIDA ---
+        if file_name.endswith('.csv'):
+            # Assume a codificação 'latin-1' que pode ser comum
+            df = pd.read_csv(io.StringIO(uploaded_file.getvalue().decode('latin-1')))
+        elif file_name.endswith('.xlsx'):
+            df = pd.read_excel(uploaded_file, engine='openpyxl')
+        elif file_name.endswith('.xls'):
+            df = pd.read_excel(uploaded_file, engine='xlrd')
+        # --- FIM DA CORREÇÃO ---
+
+        if df is None:
+            st.error("Formato de arquivo não suportado."); return None
+
+        # --- Lógica "Camaleão" para identificar colunas ---
+        rename_map = None
+        if all(col in df.columns for col in ['DATA DE VENCIMENTO', 'SALDO A PAGAR', 'NOME DO FORNECEDOR']):
+            rename_map = {'NOME DO FORNECEDOR': 'fornecedor', 'DATA DE VENCIMENTO': 'vencimento', 'SALDO A PAGAR': 'saldo', 'EMPRESA': 'company'}
+        elif all(col in df.columns for col in ['Dt. Contabil', 'Valor', 'Razão Social']):
+            rename_map = {'Razão Social': 'fornecedor', 'Dt. Contabil': 'vencimento', 'Valor': 'saldo', 'Fantasia': 'company'}
         elif all(col in df.columns for col in ['Fornecedor', 'Pagamento', 'Valor pago']):
-            rename_map = {
-                'Fornecedor': 'fornecedor',
-                'Pagamento': 'vencimento', # Usando data de pagamento para a análise de histórico
-                'Valor pago': 'saldo'
-                # A coluna 'company' não parece estar neste arquivo, será adicionada depois
-            }
-        # --- FIM DO NOVO BLOCO ---
+            rename_map = {'Fornecedor': 'fornecedor', 'Pagamento': 'vencimento', 'Valor pago': 'saldo'}
 
         if rename_map is None:
-            st.error(f"Arquivo de Contas a Pagar inválido. Não foi possível identificar as colunas necessárias. Colunas encontradas: {df.columns.tolist()}")
-            return None
-            
-        df_clean = df.rename(columns=rename_map)
+            st.error(f"Colunas necessárias não identificadas. Colunas encontradas: {df.columns.tolist()}"); return None
 
-        # Converte as colunas para os tipos corretos
+        df_clean = df.rename(columns=rename_map)
         df_clean['vencimento'] = pd.to_datetime(df_clean['vencimento'], errors='coerce')
         df_clean['saldo'] = pd.to_numeric(df_clean['saldo'], errors='coerce')
-        
-        # Garante que a coluna 'company' exista, se não foi mapeada
         if 'company' not in df_clean.columns:
             df_clean['company'] = company_name
-
         df_clean = df_clean.dropna(subset=['vencimento', 'saldo', 'fornecedor'])
-        
+
         return df_clean[['company', 'fornecedor', 'vencimento', 'saldo']]
 
     except Exception as e:
-        st.error(f"Ocorreu um erro ao processar o arquivo de Contas a Pagar. Detalhe: {e}")
-        return None
+        st.error(f"Ocorreu um erro ao processar o Contas a Pagar: {e}"); return None
 
 # (Substitua a sua função load_data_for_period por esta)
 def load_data_for_period(companies: list, start_date, end_date) -> dict:

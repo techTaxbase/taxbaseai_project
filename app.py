@@ -356,7 +356,6 @@ def process_contas_a_pagar_csv(uploaded_file, company_name: str) -> pd.DataFrame
         df = None
         # --- Lógica de Leitura ---
         if file_name.endswith('.csv'):
-            # Usei latin-1 com base no seu código original
             df = pd.read_csv(io.StringIO(uploaded_file.getvalue().decode('latin-1')))
         elif file_name.endswith('.xlsx'):
             df = pd.read_excel(uploaded_file, engine='openpyxl')
@@ -368,20 +367,20 @@ def process_contas_a_pagar_csv(uploaded_file, company_name: str) -> pd.DataFrame
             return None
 
         # --- INÍCIO DA CORREÇÃO ---
-        # A causa provável do erro "Duplicate column names" é ter colunas como
-        # 'saldo' e 'SALDO' no original, que se tornam duplicadas após o .lower().
         
-        # 1. Criamos uma lista de colunas únicas antes de aplicar o lower()
+        # 1. Padroniza os nomes (ex: 'SALDO' e 'saldo' viram 'saldo', 'saldo')
+        df.columns = df.columns.str.strip().str.lower()
+
+        # 2. AGORA, encontramos e renomeamos as duplicatas que o .lower() criou
         cols = pd.Series(df.columns)
         for dup in cols[cols.duplicated(keep=False)].unique():
              # Renomeia duplicatas para 'nome_0', 'nome_1', etc.
+             # Ex: 'saldo', 'saldo' viram 'saldo_0', 'saldo_1'
              cols[cols == dup] = [f"{dup}_{i}" for i in range(sum(cols == dup))]
         
-        # 2. Atribui as colunas únicas
+        # 3. Atribui as colunas únicas
         df.columns = cols
         
-        # 3. Agora podemos aplicar o .lower() com segurança
-        df.columns = df.columns.str.strip().str.lower()
         # --- FIM DA CORREÇÃO ---
 
 
@@ -397,20 +396,18 @@ def process_contas_a_pagar_csv(uploaded_file, company_name: str) -> pd.DataFrame
         elif all(col in df.columns for col in ['fornecedor', 'pagamento', 'valor pago']):
             rename_map = {'fornecedor': 'fornecedor', 'pagamento': 'vencimento', 'valor pago': 'saldo'}
             
-        # Formato 4 (Onde o conflito estava ocorrendo)
+        # Formato 4 (Agora com as colunas desduplicadas)
         elif all(col in df.columns for col in ['historico', 'datalan', 'valcre']):
             st.warning("Usando 'Data Lançamento', 'Valor Crédito', 'Histórico'.")
             
-            # Agora o 'rename_map' trata 'valcre' como 'saldo'
-            # e renomeia qualquer coluna 'saldo_X' (criada na Etapa 1)
-            # para nomes que não causem conflito.
             rename_map = {
                 'historico': 'fornecedor',
                 'datalan': 'vencimento',
                 'valcre': 'saldo', # 'valcre' é o saldo principal
             }
             
-            # Remove outras colunas 'saldo' (ex: 'saldo_0', 'saldo_1')
+            # Agora, renomeia dinamicamente quaisquer colunas 'saldo_X' 
+            # (criadas na Etapa 2) para nomes inofensivos
             for col in df.columns:
                 if col.startswith('saldo_'):
                     rename_map[col] = f'saldo_extra_{col.split("_")[-1]}' # ex: 'saldo_extra_0'
@@ -421,19 +418,19 @@ def process_contas_a_pagar_csv(uploaded_file, company_name: str) -> pd.DataFrame
 
         df_clean = df.rename(columns=rename_map)
 
-        # --- INÍCIO DO DEBUG ---
+        # --- DEBUG PÓS-RENOMEAR ---
+        # (Seu log de erro aparece aqui, então o erro de duplicata
+        #  pode estar acontecendo no próprio .rename() ou logo depois)
         st.error("--- DEBUG PÓS-RENOMEAR ---")
         st.write("Primeiras 5 linhas do DataFrame após renomear:")
         st.dataframe(df_clean.head())
         st.write("Colunas do DataFrame após renomear:")
         st.write(df_clean.columns.tolist())
         st.error("--- FIM DO DEBUG ---")
-        # --- FIM DO DEBUG ---
 
         # --- Conversão de Tipos e Limpeza ---
         required_final_cols = ['fornecedor', 'vencimento', 'saldo']
         
-        # Verifica se as colunas FINAIS existem (após renomear)
         if not all(col in df_clean.columns for col in required_final_cols):
              st.error(f"Erro interno: Colunas faltando após renomear. Esperado: {required_final_cols}. Encontrado: {df_clean.columns.tolist()}"); 
              return None
@@ -449,15 +446,18 @@ def process_contas_a_pagar_csv(uploaded_file, company_name: str) -> pd.DataFrame
 
         df_clean = df_clean.dropna(subset=['vencimento', 'saldo', 'fornecedor'])
         
-        # Garante que só as colunas finais necessárias sejam mantidas
         final_cols = ['company', 'fornecedor', 'vencimento', 'saldo']
+        # Mantém apenas as colunas finais + as que já existem
         df_clean = df_clean[[col for col in final_cols if col in df_clean.columns]]
 
         return df_clean
 
     except Exception as e:
-        # Mostra o erro real que está acontecendo
+        # O erro que você está vendo é capturado aqui
         st.error(f"Ocorreu um erro detalhado ao processar o Contas a Pagar: {e}")
+        # Para ajudar no debug, vamos mostrar as colunas *antes* da falha
+        if 'df' in locals():
+            st.error(f"Colunas no momento do erro: {df.columns.tolist()}")
         return None
 
 # (Substitua a sua função load_data_for_period por esta)

@@ -356,14 +356,34 @@ def process_contas_a_pagar_csv(uploaded_file, company_name: str) -> pd.DataFrame
         df = None
         # --- Lógica de Leitura ---
         if file_name.endswith('.csv'):
+            # Usei latin-1 com base no seu código original
             df = pd.read_csv(io.StringIO(uploaded_file.getvalue().decode('latin-1')))
         elif file_name.endswith('.xlsx'):
             df = pd.read_excel(uploaded_file, engine='openpyxl')
         elif file_name.endswith('.xls'):
             df = pd.read_excel(uploaded_file, engine='xlrd')
-        if df is None: st.error("Formato de arquivo não suportado."); return None
+            
+        if df is None: 
+            st.error("Formato de arquivo não suportado.")
+            return None
 
+        # --- INÍCIO DA CORREÇÃO ---
+        # A causa provável do erro "Duplicate column names" é ter colunas como
+        # 'saldo' e 'SALDO' no original, que se tornam duplicadas após o .lower().
+        
+        # 1. Criamos uma lista de colunas únicas antes de aplicar o lower()
+        cols = pd.Series(df.columns)
+        for dup in cols[cols.duplicated(keep=False)].unique():
+             # Renomeia duplicatas para 'nome_0', 'nome_1', etc.
+             cols[cols == dup] = [f"{dup}_{i}" for i in range(sum(cols == dup))]
+        
+        # 2. Atribui as colunas únicas
+        df.columns = cols
+        
+        # 3. Agora podemos aplicar o .lower() com segurança
         df.columns = df.columns.str.strip().str.lower()
+        # --- FIM DA CORREÇÃO ---
+
 
         # --- Lógica "Camaleão" ---
         rename_map = None
@@ -376,13 +396,28 @@ def process_contas_a_pagar_csv(uploaded_file, company_name: str) -> pd.DataFrame
         # Formato 3
         elif all(col in df.columns for col in ['fornecedor', 'pagamento', 'valor pago']):
             rename_map = {'fornecedor': 'fornecedor', 'pagamento': 'vencimento', 'valor pago': 'saldo'}
-        # Formato 4
+            
+        # Formato 4 (Onde o conflito estava ocorrendo)
         elif all(col in df.columns for col in ['historico', 'datalan', 'valcre']):
             st.warning("Usando 'Data Lançamento', 'Valor Crédito', 'Histórico'.")
-            rename_map = {'historico': 'fornecedor', 'datalan': 'vencimento', 'valcre': 'saldo'}
+            
+            # Agora o 'rename_map' trata 'valcre' como 'saldo'
+            # e renomeia qualquer coluna 'saldo_X' (criada na Etapa 1)
+            # para nomes que não causem conflito.
+            rename_map = {
+                'historico': 'fornecedor',
+                'datalan': 'vencimento',
+                'valcre': 'saldo', # 'valcre' é o saldo principal
+            }
+            
+            # Remove outras colunas 'saldo' (ex: 'saldo_0', 'saldo_1')
+            for col in df.columns:
+                if col.startswith('saldo_'):
+                    rename_map[col] = f'saldo_extra_{col.split("_")[-1]}' # ex: 'saldo_extra_0'
 
         if rename_map is None:
-            st.error(f"Colunas necessárias não identificadas. Colunas: {df.columns.tolist()}"); return None
+            st.error(f"Colunas necessárias não identificadas. Colunas: {df.columns.tolist()}"); 
+            return None
 
         df_clean = df.rename(columns=rename_map)
 
@@ -397,24 +432,33 @@ def process_contas_a_pagar_csv(uploaded_file, company_name: str) -> pd.DataFrame
 
         # --- Conversão de Tipos e Limpeza ---
         required_final_cols = ['fornecedor', 'vencimento', 'saldo']
+        
+        # Verifica se as colunas FINAIS existem (após renomear)
         if not all(col in df_clean.columns for col in required_final_cols):
-             st.error(f"Erro interno: Colunas faltando após renomear: {set(required_final_cols) - set(df_clean.columns)}"); return None
+             st.error(f"Erro interno: Colunas faltando após renomear. Esperado: {required_final_cols}. Encontrado: {df_clean.columns.tolist()}"); 
+             return None
 
         df_clean['vencimento'] = pd.to_datetime(df_clean['vencimento'], errors='coerce')
         df_clean['saldo'] = pd.to_numeric(df_clean['saldo'], errors='coerce')
         df_clean['fornecedor'] = df_clean['fornecedor'].astype(str)
 
-        if 'company' not in df_clean.columns: df_clean['company'] = company_name
-        elif 'company' in df_clean.columns: df_clean['company'] = df_clean['company'].astype(str)
+        if 'company' not in df_clean.columns: 
+            df_clean['company'] = company_name
+        elif 'company' in df_clean.columns: 
+            df_clean['company'] = df_clean['company'].astype(str)
 
         df_clean = df_clean.dropna(subset=['vencimento', 'saldo', 'fornecedor'])
+        
+        # Garante que só as colunas finais necessárias sejam mantidas
         final_cols = ['company', 'fornecedor', 'vencimento', 'saldo']
         df_clean = df_clean[[col for col in final_cols if col in df_clean.columns]]
 
         return df_clean
 
     except Exception as e:
-        st.error(f"Ocorreu um erro detalhado ao processar o Contas a Pagar: {e}"); return None
+        # Mostra o erro real que está acontecendo
+        st.error(f"Ocorreu um erro detalhado ao processar o Contas a Pagar: {e}")
+        return None
 
 # (Substitua a sua função load_data_for_period por esta)
 def load_data_for_period(companies: list, start_date, end_date) -> dict:

@@ -366,22 +366,22 @@ def process_contas_a_pagar_csv(uploaded_file, company_name: str) -> pd.DataFrame
             st.error("Formato de arquivo não suportado.")
             return None
 
-        # --- INÍCIO DA CORREÇÃO ---
-        
-        # 1. Padroniza os nomes (ex: 'SALDO' e 'saldo' viram 'saldo', 'saldo')
+        # Padroniza os nomes (ex: 'SALDO' e 'saldo' viram 'saldo', 'saldo')
+        # Este é o passo que CRIA as duplicatas se elas existirem com 
+        # caixas diferentes (ex: 'saldo' e 'SALDO')
         df.columns = df.columns.str.strip().str.lower()
 
-        # 2. AGORA, encontramos e renomeamos as duplicatas que o .lower() criou
+        # --- INÍCIO DA CORREÇÃO DE DESDUPLICAÇÃO ---
+        # Se o passo anterior criou duplicatas (ex: 'saldo', 'saldo'),
+        # nós as renomeamos para 'saldo_0', 'saldo_1', etc. ANTES de tudo.
         cols = pd.Series(df.columns)
         for dup in cols[cols.duplicated(keep=False)].unique():
-             # Renomeia duplicatas para 'nome_0', 'nome_1', etc.
-             # Ex: 'saldo', 'saldo' viram 'saldo_0', 'saldo_1'
              cols[cols == dup] = [f"{dup}_{i}" for i in range(sum(cols == dup))]
         
-        # 3. Atribui as colunas únicas
+        # Atribui as colunas agora únicas de volta ao DataFrame
         df.columns = cols
-        
-        # --- FIM DA CORREÇÃO ---
+        # Agora o DataFrame pode ter colunas como ['...saldo_0', 'saldo_1', 'saldo_exe'...]
+        # --- FIM DA CORREÇÃO DE DESDUPLICAÇÃO ---
 
 
         # --- Lógica "Camaleão" ---
@@ -396,21 +396,33 @@ def process_contas_a_pagar_csv(uploaded_file, company_name: str) -> pd.DataFrame
         elif all(col in df.columns for col in ['fornecedor', 'pagamento', 'valor pago']):
             rename_map = {'fornecedor': 'fornecedor', 'pagamento': 'vencimento', 'valor pago': 'saldo'}
             
-        # Formato 4 (Agora com as colunas desduplicadas)
+        # Formato 4 (Onde o conflito estava ocorrendo)
         elif all(col in df.columns for col in ['historico', 'datalan', 'valcre']):
             st.warning("Usando 'Data Lançamento', 'Valor Crédito', 'Histórico'.")
             
+            # O seu log de colunas mostra que o arquivo original (Formato 4)
+            # também tem colunas 'vencimento', 'fornecedor', 'saldo', 'saldo_exe'.
+            # Precisamos renomear todas elas para evitar conflitos.
+            
             rename_map = {
+                # 1. Renomeia os conflitos "para fora"
+                # (Renomeia qualquer coluna que já tenha o nome final)
+                'fornecedor': 'fornecedor_original',
+                'vencimento': 'vencimento_original',
+                'saldo': 'saldo_original', # 'saldo' do arquivo original
+                'saldo_exe': 'saldo_exe_original', # 'saldo_exe' do arquivo original
+                
+                # 2. Renomeia as duplicatas criadas pelo .lower() (ex: 'saldo_0')
+                # (Isso é um "cinto de segurança" para o passo de desduplicação)
+                **{col: f"{col}_extra" for col in df.columns if col.startswith('saldo_')},
+                **{col: f"{col}_extra" for col in df.columns if col.startswith('vencimento_')},
+                **{col: f"{col}_extra" for col in df.columns if col.startswith('fornecedor_')},
+                
+                # 3. Mapeia as colunas desejadas para os nomes padronizados
                 'historico': 'fornecedor',
                 'datalan': 'vencimento',
-                'valcre': 'saldo', # 'valcre' é o saldo principal
+                'valcre': 'saldo' # Agora 'valcre' pode se tornar 'saldo' sem conflito
             }
-            
-            # Agora, renomeia dinamicamente quaisquer colunas 'saldo_X' 
-            # (criadas na Etapa 2) para nomes inofensivos
-            for col in df.columns:
-                if col.startswith('saldo_'):
-                    rename_map[col] = f'saldo_extra_{col.split("_")[-1]}' # ex: 'saldo_extra_0'
 
         if rename_map is None:
             st.error(f"Colunas necessárias não identificadas. Colunas: {df.columns.tolist()}"); 
@@ -419,8 +431,6 @@ def process_contas_a_pagar_csv(uploaded_file, company_name: str) -> pd.DataFrame
         df_clean = df.rename(columns=rename_map)
 
         # --- DEBUG PÓS-RENOMEAR ---
-        # (Seu log de erro aparece aqui, então o erro de duplicata
-        #  pode estar acontecendo no próprio .rename() ou logo depois)
         st.error("--- DEBUG PÓS-RENOMEAR ---")
         st.write("Primeiras 5 linhas do DataFrame após renomear:")
         st.dataframe(df_clean.head())
@@ -447,15 +457,12 @@ def process_contas_a_pagar_csv(uploaded_file, company_name: str) -> pd.DataFrame
         df_clean = df_clean.dropna(subset=['vencimento', 'saldo', 'fornecedor'])
         
         final_cols = ['company', 'fornecedor', 'vencimento', 'saldo']
-        # Mantém apenas as colunas finais + as que já existem
         df_clean = df_clean[[col for col in final_cols if col in df_clean.columns]]
 
         return df_clean
 
     except Exception as e:
-        # O erro que você está vendo é capturado aqui
         st.error(f"Ocorreu um erro detalhado ao processar o Contas a Pagar: {e}")
-        # Para ajudar no debug, vamos mostrar as colunas *antes* da falha
         if 'df' in locals():
             st.error(f"Colunas no momento do erro: {df.columns.tolist()}")
         return None
